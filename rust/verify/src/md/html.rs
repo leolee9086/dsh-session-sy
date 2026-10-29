@@ -1,0 +1,256 @@
+//! HTML 块的类型判定与标签校验（对应 Lute 的 html_block.go 里的纯函数部分）。
+
+use super::util::{is_whitespace, trim_whitespace};
+
+/// 对应 HtmlBlockStart 的判定：给一行内容，返回它是哪一型 HTML 块。
+pub(super) fn parse_html_block_type(tokens: &[u8], in_paragraph: bool) -> Option<u64> {
+    let tokens = trim_left_whitespace(tokens);
+    if tokens.len() < 3 || tokens[0] != b'<' {
+        return None;
+    }
+    for tag in ["<script", "<pre", "<style", "<textarea"] {
+        if let Some(rest) = starts_with_ignore_case(tokens, tag.as_bytes()) {
+            if rest.first().is_some_and(|b| is_whitespace(*b) || *b == b'>') {
+                return Some(1);
+            }
+        }
+    }
+    for tag in HTML_BLOCK_TAGS {
+        // 块级标签按字节精确匹配（区分大小写，对应 Lute 的 AcceptTokenss）
+        if let Some(rest) = tokens.strip_prefix(tag.as_bytes()) {
+            if rest.first().is_some_and(|b| is_whitespace(*b) || *b == b'>') {
+                return Some(6);
+            }
+            if rest.starts_with(b"/>") {
+                return Some(6);
+            }
+        }
+    }
+    let tag = trim_whitespace(tokens);
+    if !in_paragraph && (is_open_tag(&tag) || is_close_tag(&tag)) {
+        return Some(7);
+    }
+    if tokens.starts_with(b"<!--") {
+        return Some(2);
+    }
+    if tokens.starts_with(b"<?") {
+        return Some(3);
+    }
+    if tokens.len() > 2 && tokens.starts_with(b"<!") {
+        let following = &tokens[2..];
+        if following[0].is_ascii_uppercase() {
+            return Some(4);
+        }
+        if following.starts_with(b"[CDATA[") {
+            return Some(5);
+        }
+    }
+    None
+}
+
+pub(super) fn starts_with_ignore_case<'a>(tokens: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+    if tokens.len() < prefix.len() {
+        return None;
+    }
+    for (index, byte) in prefix.iter().enumerate() {
+        if !tokens[index].eq_ignore_ascii_case(byte) {
+            return None;
+        }
+    }
+    Some(&tokens[prefix.len()..])
+}
+
+/// 对应 isOpenTag：形如 <a>、<a href="x">、<br /> 的完整开标签。
+pub(super) fn is_open_tag(tokens: &[u8]) -> bool {
+    let length = tokens.len();
+    if length < 3 {
+        return false;
+    }
+    if tokens[0] != b'<' {
+        return false;
+    }
+    if tokens[length - 1] != b'>' {
+        return false;
+    }
+    let inner = if tokens[length - 2] == b'/' {
+        &tokens[1..length - 2]
+    } else {
+        &tokens[1..length - 1]
+    };
+    if inner.is_empty() {
+        return false;
+    }
+    // 小于号后面不能跟空白
+    if is_whitespace(inner[0]) {
+        return false;
+    }
+    let parts = split_whitespace(inner);
+    let Some(name) = parts.first() else {
+        return false;
+    };
+    if name.is_empty() || !name[0].is_ascii_alphabetic() {
+        return false;
+    }
+    for byte in &name[1..] {
+        if !is_ascii_letter_num_hyphen(*byte) {
+            return false;
+        }
+    }
+    for attr in &parts[1..] {
+        if attr.len() <= 1 {
+            continue;
+        }
+        let mut split = attr.splitn(2, |b| *b == b'=');
+        let name = split.next().unwrap_or(&[]);
+        if name.is_empty() {
+            continue;
+        }
+        if !name[0].is_ascii_alphabetic() && name[0] != b'_' && name[0] != b':' {
+            return false;
+        }
+        for byte in &name[1..] {
+            if !(is_ascii_letter_num_hyphen(*byte)
+                || *byte == b'_'
+                || *byte == b'.'
+                || *byte == b':')
+            {
+                return false;
+            }
+        }
+        let Some(value) = split.next() else { continue };
+        if value.len() >= 2 && value[0] == b'\'' && value[value.len() - 1] == b'\'' {
+            let inner = &value[1..value.len() - 1];
+            if inner.is_empty() || inner.contains(&b'\'') {
+                return false;
+            }
+            continue;
+        }
+        if value.len() >= 2 && value[0] == b'"' && value[value.len() - 1] == b'"' {
+            let inner = &value[1..value.len() - 1];
+            if inner.is_empty() || inner.contains(&b'"') {
+                return false;
+            }
+            continue;
+        }
+        if value.iter().any(|b| matches!(b, b' ' | b'\t' | b'\n')) {
+            return false;
+        }
+        if value
+            .iter()
+            .any(|b| matches!(b, b'"' | b'\'' | b'=' | b'<' | b'>' | b'\x60'))
+        {
+            return false;
+        }
+    }
+    true
+}
+
+/// 对应 isCloseTag：形如 </a> 的完整闭标签。
+pub(super) fn is_close_tag(tokens: &[u8]) -> bool {
+    let tokens = trim_whitespace(tokens);
+    let length = tokens.len();
+    if length < 4 {
+        return false;
+    }
+    if tokens[0] != b'<' || tokens[1] != b'/' {
+        return false;
+    }
+    if tokens[length - 1] != b'>' {
+        return false;
+    }
+    let inner = &tokens[2..length - 1];
+    if inner.is_empty() {
+        return false;
+    }
+    if !inner[0].is_ascii_alphabetic() {
+        return false;
+    }
+    for byte in &inner[1..] {
+        if !is_ascii_letter_num_hyphen(*byte) {
+            return false;
+        }
+    }
+    true
+}
+
+/// 对应 lex.SplitWhitespace。
+pub(super) fn split_whitespace(tokens: &[u8]) -> Vec<Vec<u8>> {
+    let mut parts: Vec<Vec<u8>> = Vec::new();
+    let mut current: Vec<u8> = Vec::new();
+    for byte in tokens {
+        if is_whitespace(*byte) {
+            if !current.is_empty() {
+                parts.push(std::mem::take(&mut current));
+            }
+            continue;
+        }
+        current.push(*byte);
+    }
+    if !current.is_empty() {
+        parts.push(current);
+    }
+    parts
+}
+
+pub(super) fn is_ascii_letter_num_hyphen(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'-'
+}
+
+/// 对应 isHTMLBlockClose 的 1-5 型判定。
+pub(super) fn html_block_closes(tokens: &[u8], html_type: u64) -> bool {
+    match html_type {
+        1 => ["</script>", "</pre>", "</style>", "</textarea>"]
+            .iter()
+            .any(|tag| contains_ignore_case(tokens, tag.as_bytes())),
+        2 => contains_sequence(tokens, b"-->"),
+        3 => contains_sequence(tokens, b"?>"),
+        4 => tokens.contains(&b'>'),
+        5 => contains_sequence(tokens, b"]]>"),
+        _ => false,
+    }
+}
+
+pub(super) fn contains_sequence(tokens: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || tokens.len() < needle.len() {
+        return false;
+    }
+    (0..=tokens.len() - needle.len()).any(|start| &tokens[start..start + needle.len()] == needle)
+}
+
+fn contains_ignore_case(tokens: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() || tokens.len() < needle.len() {
+        return false;
+    }
+    (0..=tokens.len() - needle.len()).any(|start| {
+        tokens[start..start + needle.len()]
+            .iter()
+            .zip(needle.iter())
+            .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    })
+}
+
+pub(super) fn trim_left_whitespace(tokens: &[u8]) -> &[u8] {
+    let mut start = 0usize;
+    while start < tokens.len() && matches!(tokens[start], b' ' | b'\t' | b'\n' | b'\r') {
+        start += 1;
+    }
+    &tokens[start..]
+}
+
+pub(super) const HTML_BLOCK_TAGS: &[&str] = &[
+    "<address", "<article", "<aside", "<base", "<basefont", "<blockquote", "<body", "<caption",
+    "<center", "<col", "<colgroup", "<dd", "<details", "<dialog", "<dir", "<div", "<dl", "<dt",
+    "<fieldset", "<figcaption", "<figure", "<footer", "<form", "<frame", "<frameset", "<h1", "<h2",
+    "<h3", "<h4", "<h5", "<h6", "<head", "<header", "<hr", "<html", "<iframe", "<legend", "<li",
+    "<link", "<main", "<menu", "<menuitem", "<nav", "<noframes", "<ol", "<optgroup", "<option",
+    "<p", "<param", "<section", "<source", "<summary", "<table", "<tbody", "<td", "<tfoot", "<th",
+    "<thead", "<title", "<tr", "<track", "<ul", "<video", "<audio",
+    "</address", "</article", "</aside", "</base", "</basefont", "</blockquote", "</body",
+    "</caption", "</center", "</col", "</colgroup", "</dd", "</details", "</dialog", "</dir",
+    "</div", "</dl", "</dt", "</fieldset", "</figcaption", "</figure", "</footer", "</form",
+    "</frame", "</frameset", "</h1", "</h2", "</h3", "</h4", "</h5", "</h6", "</head", "</header",
+    "</hr", "</html", "</iframe", "</legend", "</li", "</link", "</main", "</menu", "</menuitem",
+    "</nav", "</noframes", "</ol", "</optgroup", "</option", "</p", "</param", "</section",
+    "</source", "</summary", "</table", "</tbody", "</td", "</tfoot", "</th", "</thead", "</title",
+    "</tr", "</track", "</ul", "</video", "</audio",
+];
