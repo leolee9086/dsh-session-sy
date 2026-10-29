@@ -1,0 +1,11 @@
+# Rust
+rust/*/target/
+
+# 旧的 TS 实现构建产物
+legacy-ts/lib/
+legacy-ts/node_modules/
+node_modules/
+
+# 临时文件与导出产物（.tmp- 开头的文件和目录都算）
+.tmp-*
+*.sy

@@ -1,0 +1,303 @@
+{
+  "Type": "NodeDocument",
+  "Children": [
+    {
+      "Type": "NodeList",
+      "ListData": {
+        "Tight": true,
+        "BulletChar": 45,
+        "Padding": 2,
+        "Marker": "LQ==",
+        "Num": -1
+      },
+      "Children": [
+        {
+          "Type": "NodeListItem",
+          "Data": "-",
+          "ListData": {
+            "Tight": true,
+            "BulletChar": 45,
+            "Padding": 2,
+            "Marker": "LQ==",
+            "Num": -1
+          },
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "项目一"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "Type": "NodeListItem",
+          "Data": "-",
+          "ListData": {
+            "Tight": true,
+            "BulletChar": 45,
+            "Padding": 2,
+            "Marker": "LQ==",
+            "Num": -1
+          },
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "项目二"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeList",
+      "ListData": {
+        "Typ": 1,
+        "Tight": true,
+        "Start": 1,
+        "Delimiter": 46,
+        "Padding": 3,
+        "Marker": "MS4=",
+        "Num": 1
+      },
+      "Children": [
+        {
+          "Type": "NodeListItem",
+          "Data": "1.",
+          "ListData": {
+            "Typ": 1,
+            "Tight": true,
+            "Start": 1,
+            "Delimiter": 46,
+            "Padding": 3,
+            "Marker": "MS4=",
+            "Num": 1
+          },
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "第一"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "Type": "NodeListItem",
+          "Data": "2.",
+          "ListData": {
+            "Typ": 1,
+            "Tight": true,
+            "Start": 2,
+            "Delimiter": 46,
+            "Padding": 3,
+            "Marker": "Mi4=",
+            "Num": 2
+          },
+          "Children": [
+            {
+              "Type": "NodeParagraph",
+              "Children": [
+                {
+                  "Type": "NodeText",
+                  "Data": "第二"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeBlockquote",
+      "Children": [
+        {
+          "Type": "NodeBlockquoteMarker",
+          "Data": "> "
+        },
+        {
+          "Type": "NodeParagraph",
+          "Children": [
+            {
+              "Type": "NodeText",
+              "Data": "引用"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeHeading",
+      "HeadingLevel": 2,
+      "Children": [
+        {
+          "Type": "NodeHeadingC8hMarker",
+          "Data": "## "
+        },
+        {
+          "Type": "NodeText",
+          "Data": "标题"
+        }
+      ]
+    },
+    {
+      "Type": "NodeParagraph",
+      "Children": [
+        {
+          "Type": "NodeCodeSpan",
+          "CodeMarkerLen": 1,
+          "Children": [
+            {
+              "Type": "NodeCodeSpanOpenMarker",
+              "Data": "`"
+            },
+            {
+              "Type": "NodeCodeSpanContent",
+              "Data": "code"
+            },
+            {
+              "Type": "NodeCodeSpanCloseMarker",
+              "Data": "`"
+            }
+          ]
+        },
+        {
+          "Type": "NodeText",
+          "Data": " 和 "
+        },
+        {
+          "Type": "NodeStrong",
+          "Children": [
+            {
+              "Type": "NodeStrongA6kOpenMarker",
+              "Data": "**"
+            },
+            {
+              "Type": "NodeText",
+              "Data": "粗"
+            },
+            {
+              "Type": "NodeStrongA6kCloseMarker",
+              "Data": "**"
+            }
+          ]
+        },
+        {
+          "Type": "NodeText",
+          "Data": " 和 "
+        },
+        {
+          "Type": "NodeEmphasis",
+          "Children": [
+            {
+              "Type": "NodeEmA6kOpenMarker",
+              "Data": "*"
+            },
+            {
+              "Type": "NodeText",
+              "Data": "斜"
+            },
+            {
+              "Type": "NodeEmA6kCloseMarker",
+              "Data": "*"
+            }
+          ]
+        },
+        {
+          "Type": "NodeText",
+          "Data": " 和 "
+        },
+        {
+          "Type": "NodeStrikethrough",
+          "Children": [
+            {
+              "Type": "NodeStrikethrough2OpenMarker",
+              "Data": "~~"
+            },
+            {
+              "Type": "NodeText",
+              "Data": "删"
+            },
+            {
+              "Type": "NodeStrikethrough2CloseMarker",
+              "Data": "~~"
+            }
+          ]
+        },
+        {
+          "Type": "NodeText",
+          "Data": " 和 "
+        },
+        {
+          "Type": "NodeLink",
+          "Children": [
+            {
+              "Type": "NodeOpenBracket",
+              "Data": "["
+            },
+            {
+              "Type": "NodeLinkText",
+              "Data": "链接"
+            },
+            {
+              "Type": "NodeCloseBracket",
+              "Data": "]"
+            },
+            {
+              "Type": "NodeOpenParen",
+              "Data": "("
+            },
+            {
+              "Type": "NodeLinkDest",
+              "Data": "http://a"
+            },
+            {
+              "Type": "NodeCloseParen",
+              "Data": ")"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "Type": "NodeCodeBlock",
+      "IsFencedCodeBlock": true,
+      "CodeBlockFenceChar": 96,
+      "CodeBlockFenceLen": 3,
+      "CodeBlockOpenFence": "YGBg",
+      "CodeBlockInfo": "Z28=",
+      "CodeBlockCloseFence": "YGBg",
+      "Children": [
+        {
+          "Type": "NodeCodeBlockFenceOpenMarker",
+          "Data": "```",
+          "CodeBlockFenceLen": 3
+        },
+        {
+          "Type": "NodeCodeBlockFenceInfoMarker",
+          "CodeBlockInfo": "Z28="
+        },
+        {
+          "Type": "NodeCodeBlockCode",
+          "Data": "func main(){}\n"
+        },
+        {
+          "Type": "NodeCodeBlockFenceCloseMarker",
+          "Data": "```",
+          "CodeBlockFenceLen": 3
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+[package]
+name = "session-sy"
+version = "0.1.0"
+edition = "2021"
+description = "把 agent 会话序列转换成思源 .sy 文档，并能转换回来"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ruzstd = "0.7"
+html-escape = "0.3.0"
+
+[lib]
+name = "session_sy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "session-sy"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
