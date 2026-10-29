@@ -1,6 +1,9 @@
 //! HTML 块的类型判定与标签校验（对应 Lute 的 html_block.go 里的纯函数部分）。
 
-use super::util::{is_whitespace, trim_whitespace};
+use serde_json::json;
+
+use super::util::{is_whitespace, trim_right_whitespace, trim_trailing_newline_spaces, trim_whitespace};
+use super::Parser;
 
 /// 对应 HtmlBlockStart 的判定：给一行内容，返回它是哪一型 HTML 块。
 pub(super) fn parse_html_block_type(tokens: &[u8], in_paragraph: bool) -> Option<u64> {
@@ -254,3 +257,86 @@ pub(super) const HTML_BLOCK_TAGS: &[&str] = &[
     "</source", "</summary", "</table", "</tbody", "</td", "</tfoot", "</th", "</thead", "</title",
     "</tr", "</track", "</ul", "</video", "</audio",
 ];
+
+impl Parser {
+    /// 对应 HtmlBlockStart：判定 HTML 块类型并开块。
+    pub(super) fn html_block_start(&mut self, _container: usize) -> bool {
+        if self.indented {
+            return false;
+        }
+        if self.current_line.get(self.next_nonspace) != Some(&b'<') {
+            return false;
+        }
+        let tokens = self.rest_of_line().to_vec();
+        // 7 型（完整标签）只在不是段落延续时才成立，否则应留给行内 HTML。
+        let tip_type = self
+            .tip
+            .map(|index| self.nodes[index].node_type)
+            .unwrap_or("NodeDocument");
+        let in_paragraph = tip_type == "NodeParagraph";
+        let Some(html_type) = parse_html_block_type(&tokens, in_paragraph) else {
+            return false;
+        };
+        self.close_unmatched_blocks();
+        let block = self.add_child("NodeHTMLBlock");
+        self.nodes[block].attrs.push(("HtmlBlockType", json!(html_type)));
+        true
+    }
+
+    /// 对应 HtmlBlockContinue：6/7 型遇空行结束，其余靠闭合标记。
+    pub(super) fn html_block_continue(&mut self, node: usize) -> i32 {
+        let html_type = self.attr_u64(node, "HtmlBlockType").unwrap_or(0);
+        if (html_type == 6 || html_type == 7) && self.blank {
+            return 1;
+        }
+        0
+    }
+
+    /// 对应 htmlBlockFinalize。
+    pub(super) fn html_block_finalize(&mut self, block: usize) {
+        let tokens = self.nodes[block].tokens.clone();
+        let trimmed = trim_trailing_newline_spaces(&tokens);
+        self.nodes[block].tokens = trim_right_whitespace(&trimmed).to_vec();
+    }
+
+    /// 对应 SetextHeadingStart：段落后面跟 === 或 --- 就升级成标题。
+    pub(super) fn setext_heading_start(&mut self, container: usize) -> bool {
+        if self.indented || self.nodes[container].node_type != "NodeParagraph" {
+            return false;
+        }
+        let line = trim_whitespace(&self.current_line);
+        if line.is_empty() {
+            return false;
+        }
+        let first = line[0];
+        if first != b'=' && first != b'-' {
+            return false;
+        }
+        if !line.iter().all(|b| *b == first) {
+            return false;
+        }
+        let level = if first == b'=' { 1 } else { 2 };
+        self.close_unmatched_blocks();
+        // 段落开头的链接引用定义先摘走，剩下的才是标题内容
+        let defs = self.extract_link_ref_defs(container);
+        if !defs.is_empty() {
+            let parent = self.nodes[container].parent;
+            self.append_def_block(defs, parent);
+        }
+        let tokens = trim_whitespace(&self.nodes[container].tokens);
+        if tokens.is_empty() {
+            return false;
+        }
+        self.nodes[container].node_type = "NodeHeading";
+        self.nodes[container].tokens = tokens;
+        self.nodes[container]
+            .attrs
+            .push(("HeadingLevel", json!(level)));
+        self.nodes[container]
+            .attrs
+            .push(("HeadingSetext", json!(true)));
+        self.tip = Some(container);
+        self.advance_offset(self.current_line.len() - self.offset, false);
+        true
+    }
+}
