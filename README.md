@@ -120,7 +120,7 @@ rust/verify/                 唯一实现
   tests/conformance.rs       652 条 CommonMark 等价测试
 tools/sycheck/               Go，用思源的 dataparser 校验 .sy
 tools/sycheck/mdprobe/       用 Lute 生成测试用例
-legacy-ts/                   早先的 TS 实现，留档不删
+scripts/                     思源验证与导入的辅助脚本（只用 Node 内置模块）
 ```
 
 ## 已知限制
