@@ -1,121 +1,138 @@
 # session-sy
 
-把 agent 会话序列转换成思源 `.sy` 文档，并能转换回来。DSH 是第一个适配器。
+把 agent 会话日志（`.jsonl.zstd`）转成思源 `.sy` 文档，也能转回来。DSH 是第一个适配器。
 
-```
-agent 会话  →  adapter  →  Session（头 + 有序事件）  →  spin  →  .sy（一片或多片）
-                                              ↑                        |
-                                              └──────  spinBack  ←───────┘
-```
+## 两条路径
 
-**只有一套实现，用 Rust 写。** 早先的 TS 版本在 `legacy-ts/`（仓库没有版本控制，留档不删）。
-
-## 判据只有思源和 DSH，不拿自己跟自己对账
-
-自己写的读、自己写的写，两边互相印证只能说明「我的两份实现一致」——
-我先前拿这种自洽当验证，是错的：当时生成的文档缺引用块标记、缺围栏结构，
-思源导入后 5 条消息丢了 4 条、代码块降级成文本，而我的「验证」照样报 ok。
-
-现在只认两条外部事实：
-
-| 层 | 判据 | 当前证据 |
+| 路径 | 用途 | 产出 |
 |---|---|---|
-| 格式 | 思源自己的 `dataparser.ParseJSON` | 2943 个会话 / 4943 片全部接受，零拒绝、零 needFix |
-| 结构 | **导入运行中的思源**，比「写进去的块」和「索引里留下的块」 | 18 事件：callout 5/5、段落 34/34、代码块 3/3、标题 1/1；33509 事件 47 篇：callout 7970/7970、段落 263587/263587、代码块 3310/3310、文档 47/47 |
-| 可编辑 | 在思源里 `updateBlock` 改段落，再 `getBlockKramdown` 读回 | 两次都读回编辑标记 |
-| 往返 | `spinBack(spin(x))` 与 DSH 写出的 JSONL 逐字段深等 | 2943/2943 会话 — 只说明投影可逆，**不说明思源能用** |
+| 导入思源（默认） | 归档、检索、引用、当长期记忆 | 只保留 DSH 前端会显示的内容 |
+| `--spin` | 逐字节还原 | 结构完全相同，额外把原始事件挂在 callout 属性上 |
+
+两条路径共用同一段组装逻辑：结构一致、顺序一致，spin 只是多挂了属性。
+
+## 判据
+
+只认外部事实，不拿自己跟自己对账——自己写的读、自己写的写，两边互相印证只能说明两份实现一致。
+
+| 层 | 判据 | 现状 |
+|---|---|---|
+| 格式 | 思源自己的 `dataparser.ParseJSON` | needFix: false |
+| 结构 | 导入运行中的思源，比「写进去的块」与「索引里留下的块」 | 937 块对得上 |
+| Markdown | Lute 生成的 652 条 CommonMark 用例，逐字节比树 | 652/652 |
+| 往返 | `restore(spin(x))` 与原始事件逐条比 | 150 事件一致 |
+
+Markdown 这一层为什么重要：正文是 markdown，`.sy` 里却是 AST，任何一处解析差异导入后都会变成结构差异。所以解析器按 Lute 的源码结构移植，用 Lute 自己生成的用例逐字节校验。
+
 格式层由 `tools/sycheck`（Go）实现，调的就是内核 `filesys/tree.go` 用的那个函数：
 
 ```go
 tree, needFix, err := dataparser.ParseJSON(data, engine.ParseOptions)
 ```
 
-`dataparser` 不在 Lute 里，是独立仓库 `github.com/siyuan-note/dataparser`。
-
-## 思源会吃掉什么（实测）
-
-`scripts/siyuan-probe-format.mjs` 造一份已知内容的 `.sy` 导入思源，再读块表：
-
-| 写进去 | 思源留下 | 结论 |
-|---|---|---|
-| 引用块带 `NodeBlockquoteMarker` | 保留 | 必须写这个标记 |
-| 引用块**不带**标记 | **整块丢弃** | 子节点还在也不会显示 |
-| 代码块四段围栏（开/信息/正文/合） | 保留，块内代码围栏也保留 | 必须写全 |
-| 只有 `IsFencedCodeBlock: true` 的代码块 | 降级成普通文本 | 不写围栏等于丢代码块 |
-
-这两条是硬要求，所以 `model.rs` 里 `blockquote()` 一定塞标记、`code_block()` 一定写四段围栏。
-
 ## 文档结构
 
-正文是对话：一条消息一个 **callout**（提示块），消息正文按换行切成**独立段落块**。
-机器数据全部在文末附录。
+正文就是对话，一条消息一个 callout（提示块）：
 
 ```
-NodeDocument              title = 会话标题
-  NodeCallout             CalloutType=user  CalloutTitle=用户  CalloutIcon=👤
-                          custom-dsh-index=8  custom-dsh-role=user
-    NodeParagraph         "你的任务:..."
-    NodeParagraph         "请执行:"            custom-dsh-gap=2
-    NodeParagraph         "1. 在工具列表中..."  custom-dsh-gap=1
-  NodeCallout             CalloutType=assistant  CalloutTitle=助手  CalloutIcon=🤖
-    NodeParagraph         "I will call the tool"
-    NodeCodeBlock         工具参数（custom-dsh-block-type=tool-call）
-  NodeCallout             CalloutType=tool  CalloutTitle=工具结果  CalloutIcon=🔧
-    NodeCodeBlock         工具结果
+NodeDocument
+  NodeCallout            CalloutType=user       CalloutTitle=用户     CalloutIcon=👤
+    NodeParagraph        markdown 解析出来的块
+    ...
+  NodeCallout            CalloutType=assistant  CalloutTitle=助手     CalloutIcon=🤖
+    NodeCodeBlock        工具调用：工具名 + 完整参数
+  NodeCallout            CalloutType=tool       CalloutTitle=工具结果  CalloutIcon=🔧
+    NodeCodeBlock        工具结果原文
   ...
-  NodeHeading             事件流（机器可读，勿手改）
-  NodeCodeBlock           custom-dsh-kind=stream   ← 一行一个附录条目
 ```
 
-角色 → callout：`user` 用户 👤、`assistant` 助手 🤖、`system` 系统 ⚙️、`developer` 开发者 🛠️、`tool` 工具结果 🔧。
+角色映射：`user/message` 用户 👤、`assistant/message` 助手 🤖、`system/message` 系统 ⚙️、`developer/message` 开发者 🛠、`tool/result` 工具结果 🔧、读图片的子调用 🖼。
 
-**为什么按换行切段落**：整段输出塞进一个段落时，`.sy` 里就是一颗 `NodeText` 带一串软换行，
-编辑器里看起来是「一大坨纯文本」，没法逐段改。切成独立段落块之后，每一行都能单独选中、编辑、移动。
+几处细节：
 
-**切了怎么还原**：段落块带 `custom-dsh-gap`（这行前面有几个换行）与 `custom-dsh-trail`（末尾有几个换行），
-反向按 gap 拼回去，文本逐字节还原。同一事件的多个段落靠 `custom-dsh-block`（content 下标）连续分组。
+- 工具结果整段包成一个代码块，不交给 markdown 解析（原文可能是几百行 JSON，解析会被拆散）
+- 思考过程渲染成引用块，内部仍是 markdown 结构
+- 图片复制进思源 `assets/`，按 `NodeImage` 引用；落不到时留一句「图片未落地」说明，不静默吞掉
+- 空消息补一个空段落（思源要求每个 callout 至少有一个子块）
+- 行内 HTML 降级成文本：`dataparser` 会把 `NodeInlineHTML` 强制转成 HTML 块，那会改变结构
 
-附录条目三种：`{"h":会话头}`、`{"i":序号,"e":非可见面事件}`、`{"i":序号,"r":消息剩下字段}`。
-反向按 `custom-dsh-index` 归一，不依赖块的摆放顺序，也不依赖 `seq` 是否连续。
-## 分片
+## 签名
 
-最大的一份会话解压后 539MB / 22 万事件，思源打不开，所以一个会话输出一片或多片：
+每个块都带来源签名。签名放在块上而不是文档上：块以后会被搬走、被引用、被重排，离开本文档也要能说清从哪来。
 
-- 默认单片上限 4MB，按块大小切；**一个事件的正文块永远落在同一片**
-- 每片带 `custom-dsh-part` / `custom-dsh-parts`，`spinBack` 按序号拼回
-- 33509 事件 → 34 片；539MB 那份 → 161 片
+| 键 | 含义 |
+|---|---|
+| `custom-import-source` | 来源（`dsh`） |
+| `custom-import-archived` | 归档时刻（毫秒时间戳） |
+| `custom-dsh-session` | 会话 id |
+| `custom-dsh-preset` | 会话用的预设 |
+| `custom-dsh-model` | 产出这块内容的模型（只有 LLM 输出才标） |
 
-## 类型从哪来
+前三个是通用键，将来接别的来源也用这套；后两个是 DSH 专有，来源不是 `dsh` 时不会写。
 
-不手写、不抽样。`scripts/generate-schema.mjs` 从 DSH 发布的 `docs/persistence-schema.json`
-生成 `data/session-schema.json`（编译进二进制）：62 个事件、5 个可见面事件、7 种 content 块。
+## spin 怎么做到可逆
 
-schema 也不完整：`tool-result` 是运行时才出现的扩展块类型，所以映射对未知类型必须有兜底。
+- 每个消息 callout 带 `custom-dsh-event`：该事件的原始 JSON（base64）
+- 文档属性带 `custom-dsh-header`：日志第一行（会话头）
+- 非消息事件不集中收拢，而是留在所属位置上：`custom-dsh-before` 表示「这些事件发生在这条消息之前」，`custom-dsh-after` 存尾部剩余。顺序由位置本身表达，不需要全局索引表
+
+还原时不读正文，只读这些属性，按事件序号排序拼回原始序列。
 
 ## 命令
 
 ```
-session-sy emit <session.jsonl.zstd> <outdir> [--max-bytes N]
-session-sy verify <session.jsonl.zstd> <part.sy>...
-session-sy roundtrip <session.jsonl.zstd> [--max-bytes N]
-session-sy batch <root> [--max-bytes N] [--limit N]
-
-node scripts/verify-siyuan.mjs --sample 40 | --all     导出并逐片交思源解析器
-node scripts/siyuan-import.mjs <session> <workspace> <port> [--keep]   导入思源并比对块
-node scripts/siyuan-probe-format.mjs <workspace> <port>                探思源保留哪些结构
+session-sy render <session.jsonl.zstd> <out.sy> [--spin] [--assets DIR]
+session-sy restore <doc.sy> [<session.jsonl.zstd>]
+session-sy conformance <fixtures.json> [section]
+session-sy parse <markdown>
 ```
 
-思源内核端口是启动时挑的，从进程的监听端口取；token 从 `<workspace>/conf/conf.json` 读。
+- `render`：会话 → `.sy`。`--assets` 指向思源的资源目录，图片会复制进去
+- `restore`：从 spin 文档还原事件；给了原始会话就逐条比对并报告结果
+- `conformance`：跑 CommonMark 等价测试
+- `parse`：打印 markdown 解析出来的树（调试用）
 
-## 没有验证到的
+## 目录
 
-- **全量导入思源只做了两个会话**（18 事件、33509 事件）。2943 个会话只过了 `dataparser`，
-  没有逐篇导入；导入路径和 `dataparser` 不是同一段代码。
-- **编辑后重建没做完。** 现在只有在附录缺失时用块上的 `seq` 兜底，还没有 `seq` 重编号、
-  也没有拿 DSH 的 `Session.create()` 校验重建结果。
-- **多适配器没做。** 属性前缀按适配器分开（`custom-dsh-*`），但 `Session` 还是 DSH 的形状。
-- **块数放大。** 按换行切段落后，33509 事件变成 263587 个段落块（约 8 倍）。
-  可编辑性换来的就是这个：思源要索引 26 万个块。整份全量跑一遍会更重，没有实测。
-- **附录占体积。** 附录里 `assistant/message` 的 `stream` 重放数据最大，这是无损的代价。
-- **软换行只在段落内部。** 段落内不再出现换行（每行一段），但若原文在行内用 `\n` 表达别的语义，
-  已经被拆成两段，还原时靠 gap 拼回，可读性上仍是两段。
+```
+rust/verify/                 唯一实现
+  src/lib.rs                 库入口
+  src/md.rs                  块级解析入口（405 行）
+  src/md/start.rs            各类块的 Start 判定
+  src/md/continue.rs         Continue 判定
+  src/md/finalize.rs         Finalize 与链接引用定义
+  src/md/html.rs             HTML 块判定
+  src/md/render.rs           序列化成 Lute JSON
+  src/md/util.rs             空白裁剪与 base64
+  src/md/inline.rs           行内解析入口（322 行）
+  src/md/inline/text.rs      文本、反斜杠、换行、行内代码
+  src/md/inline/emphasis.rs  分隔符栈与文本合并
+  src/md/inline/bracket.rs   方括号与链接组装
+  src/md/inline/link.rs      标签、目标、标题扫描
+  src/md/inline/html.rs      行内 HTML 与字符实体
+  src/md/inline/autolink.rs  尖括号自动链接
+  src/render.rs              会话 → .sy（255 行）
+  src/render/blocks.rs       各类型块的组装
+  src/render/stamp.rs        签名与块 id
+  src/session.rs             读 jsonl.zstd（多帧 zstd 拼接）
+  src/model.rs               块 id 派生
+  src/main.rs                CLI
+  tests/conformance.rs       652 条 CommonMark 等价测试
+tools/sycheck/               Go，用思源的 dataparser 校验 .sy
+tools/sycheck/mdprobe/       用 Lute 生成测试用例
+legacy-ts/                   早先的 TS 实现，留档不删
+```
+
+## 已知限制
+
+- 编辑器里改完再存回 DSH 这条路没做，只做导入与 spin 还原。
+- 只适配了 DSH 一种会话格式。签名键分了通用与专有，但 `Session` 还是 DSH 的形状。
+- 图片要落进思源的 `assets/` 才显示；Rust 进程写不进工作空间之外的目录时，需要先落本地再同步过去。
+- 归档时间戳每次渲染都不同，所以同一会话两次渲染的 `.sy` 不会逐字节相同——可逆性靠事件内容，不靠文件哈希。
+
+## 从哪读起
+
+- 改渲染流程：`src/render.rs` 的 `document`
+- 改块组装：`src/render/blocks.rs` 的 `message_callout`
+- 改 markdown 解析：`src/md.rs` 是入口，按 Lute 的结构分成 start / continue / finalize / inline
+- 加校验：`tools/sycheck` 调的就是思源内核同一个解析函数
