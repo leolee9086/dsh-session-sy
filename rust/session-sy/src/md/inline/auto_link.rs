@@ -221,9 +221,9 @@ impl<'a> Parser<'a> {
             let child = self.children_get(parent, index);
             let mut handled = false;
             if self.nodes[child].node_type == "NodeText" {
-                // 不处理链接 label 里的文本
+                // 不处理链接 label 里的文本，也不处理 <a>...</a> 里面的文本
                 let inside_link = self.parent_is_link(child);
-                if !inside_link {
+                if !inside_link && !self.inside_anchor_tag(parent, index) {
                     if let Some(items) = self.split_text_into_links(child, AutoKind::Email) {
                         let count = items.len();
                         self.children_replace(parent, index, items);
@@ -239,6 +239,20 @@ impl<'a> Parser<'a> {
                 index += 1;
             }
         }
+    }
+
+    /// 对应 Lute parseGFMAutoEmailLink0 开头那段：
+    /// 文本夹在 `<a ...>` 与 `</a>` 两个行内 HTML 之间时，不做邮箱自动链接。
+    fn inside_anchor_tag(&self, parent: Option<usize>, index: usize) -> bool {
+        if index == 0 || index + 1 >= self.children_len(parent) {
+            return false;
+        }
+        let previous = self.children_get(parent, index - 1);
+        let next = self.children_get(parent, index + 1);
+        self.nodes[previous].node_type == "NodeInlineHTML"
+            && self.nodes[next].node_type == "NodeInlineHTML"
+            && self.nodes[previous].data.starts_with(b"<a ")
+            && self.nodes[next].data == b"</a>"
     }
 
     fn parent_is_link(&self, node: usize) -> bool {
