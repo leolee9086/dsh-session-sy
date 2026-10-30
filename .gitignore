@@ -7,3 +7,8 @@ rust/*/target/
 
 # Go 构建产物（ti/bench 的 .exe 都是本地编出来的）
 *.exe
+
+# 但随包发布的引擎二进制要入库：别人 clone 下来得能直接跑，
+# 不能指向 ../rebec/target/（那里没有 target 目录）
+!bin/rebec.exe
+!addon/rebec.node
