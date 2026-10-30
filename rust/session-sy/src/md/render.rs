@@ -170,6 +170,10 @@ impl Parser {
                 if let Some(data) = &node.list_data {
                     object.insert("ListData".into(), render_list_data(data));
                 }
+                // 块级 IAL 合并进来的属性
+                for (key, value) in &node.attrs {
+                    object.insert((*key).to_string(), value.clone());
+                }
                 // 空的列表项不写 Children 字段（期望是直接省略）
                 if !children.is_empty() {
                     object.insert("Children".into(), Value::Array(children));
@@ -261,6 +265,10 @@ impl Parser {
             children.push(json!({"Type": "NodeCodeBlockFenceCloseMarker", "Data": close_text, "CodeBlockFenceLen": len}));
         } else {
             children.push(code);
+        }
+        // 块级 IAL 合并进来的属性（例如代码块后面跟一行 {: id="..."}）
+        if let Some((_, properties)) = node.attrs.iter().find(|(key, _)| *key == "Properties") {
+            object.insert("Properties".into(), properties.clone());
         }
         object.insert("Children".into(), Value::Array(children));
         Value::Object(object)
@@ -542,6 +550,13 @@ impl Parser {
                     out.push_str(",\"ListData\":");
                     write_list_data(out, data);
                 }
+                // 块级 IAL 合并进来的属性
+                for (key, value) in &node.attrs {
+                    out.push(',');
+                    write_json_string(out, key);
+                    out.push(':');
+                    let _ = write!(out, "{}", value);
+                }
                 if !node.children.is_empty() {
                     out.push_str(",\"Children\":[");
                     let mut first = true;
@@ -639,6 +654,12 @@ impl Parser {
         if fenced {
             out.push_str(",\"CodeBlockCloseFence\":");
             let _ = write!(out, "{}", close_value);
+        }
+
+        // 块级 IAL 合并进来的属性（例如代码块后面跟一行 {: id="..."}）
+        if let Some((_, properties)) = node.attrs.iter().find(|(key, _)| *key == "Properties") {
+            out.push_str(",\"Properties\":");
+            let _ = write!(out, "{}", properties);
         }
 
         out.push_str(",\"Children\":[");
