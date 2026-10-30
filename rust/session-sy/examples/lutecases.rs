@@ -20,6 +20,7 @@ fn main() {
     let mut default_by_file: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut extended_by_file: BTreeMap<String, (usize, usize)> = BTreeMap::new();
     let mut samples: Vec<(usize, String, String, String)> = Vec::new();
+    let mut ext_samples: Vec<(usize, String, String, String)> = Vec::new();
 
     for case in &cases {
         let index = case.get("example").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -44,6 +45,8 @@ fn main() {
                 entry.0 += 1;
             } else if key == "default" && samples.len() < 60 {
                 samples.push((index, name.to_string(), file.clone(), markdown.to_string()));
+            } else if key == "extended" && ext_samples.len() < 60 {
+                ext_samples.push((index, name.to_string(), file.clone(), markdown.to_string()));
             }
         }
     }
@@ -69,6 +72,12 @@ fn main() {
 
     println!("\n=== default 失败样例（前 60）===");
     for (index, name, file, markdown) in &samples {
+        let preview: String = markdown.chars().take(80).collect();
+        println!("#{index} [{file}] {name} {preview:?}");
+    }
+
+    println!("\n=== extended 失败样例（前 40）===");
+    for (index, name, file, markdown) in ext_samples.iter().take(40) {
         let preview: String = markdown.chars().take(80).collect();
         println!("#{index} [{file}] {name} {preview:?}");
     }

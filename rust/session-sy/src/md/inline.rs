@@ -8,6 +8,7 @@
 mod auto_link;
 mod autolink;
 mod block_ref;
+mod file_annotation_ref;
 mod emoji;
 mod bracket;
 mod emphasis;
@@ -187,9 +188,11 @@ impl<'a> Parser<'a> {
                 b']' => self.parse_close_bracket(),
                 b'!' => self.parse_bang(),
                 b'<' => {
-                    // 依次尝试自动链接、邮件自动链接、行内 HTML，都不成立就是普通字符。
+                    // 依次尝试自动链接、邮件自动链接、文件注解引用、行内 HTML，
+                    // 都不成立就是普通字符。
                     if !self.parse_autolink()
                         && !self.parse_email_autolink()
+                        && !self.parse_file_annotation_ref()
                         && !self.parse_inline_html()
                     {
                         self.pos += 1;
@@ -364,17 +367,20 @@ fn scan_delims(
     let before_is_whitespace = before.is_whitespace();
     let mut before_is_punct = is_punct(before);
 
-    // Lute 的特例：波浪号紧挨 +/-（或与星号互邻）时不算标点。
-    // 少了这条，"--D-~5199~" 这种路径文本里的 ~ 就无法闭合。
+    // Lute 的特例：波浪号紧挨 +/-（或与星号互邻）、插入符紧挨 +/- 时都不算标点。
+    // 少了这条，"--D-~5199~" 这种路径文本里的 ~ 就无法闭合，
+    // 而 "foo^-^" 这种上标也配不上对。
     if (typ == b'*' && after == '~')
         || (typ == b'~' && after == '*')
         || (typ == b'~' && (after == '+' || after == '-'))
+        || (typ == b'^' && (after == '+' || after == '-'))
     {
         after_is_punct = false;
     }
     if (typ == b'*' && before == '~')
         || (typ == b'~' && before == '*')
         || (typ == b'~' && (before == '+' || before == '-'))
+        || (typ == b'^' && (before == '+' || before == '-'))
     {
         before_is_punct = false;
     }

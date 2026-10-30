@@ -116,8 +116,17 @@ impl<'a> Parser<'a> {
             Some(value) => value,
             None => return,
         };
-        // 注意：Lute 在这里只在 Vditor 插入符场景下才放弃，普通情况即使 } 不在行尾
-        // 也会继续把 {id} 认作标题 ID，所以这里不额外拦截。
+        // 对应 Lute：} 不在行尾、整段以插入符结尾、但结尾不是 "}‸" 时，
+        // 不认作标题 ID，退化成普通文本。例：# foo {id}b‸
+        const CARET: &[u8] = &[0xe2, 0x80, 0xb8]; // U+2038
+        if content.len() - 1 != close
+            && content.ends_with(CARET)
+            && !content.ends_with(&[b'}', 0xe2, 0x80, 0xb8])
+        {
+            self.pos += 1;
+            self.push_text(vec![b'{']);
+            return;
+        }
         let id = content[open + 1..close].to_vec();
         self.pos += close + 1;
         // 裁掉标题正文尾部的空格

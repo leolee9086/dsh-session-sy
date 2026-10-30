@@ -5,28 +5,58 @@ use serde_json::json;
 use super::util::{is_whitespace, trim_right_whitespace, trim_trailing_newline_spaces, trim_whitespace};
 use super::Parser;
 
+/// 对应 lex.AcceptTokens：前缀精确匹配（区分大小写），返回匹配的标签长度。
+fn accept_tokens(remains: &[u8], tag: &[u8]) -> Option<usize> {
+    if remains.len() < tag.len() || &remains[..tag.len()] != tag {
+        return None;
+    }
+    Some(tag.len())
+}
+
+/// 对应 lex.AcceptTokenss：在整行的任意位置找这些标签。
+///
+/// 注意它返回的是**标签长度**，不是命中的位置——Lute 随后拿这个长度去索引
+/// 原 tokens 判断边界，所以这里必须照抄，不能改成返回位置。
+fn accept_tokenss(tokens: &[u8], tags: &[&[u8]]) -> Option<usize> {
+    for i in 0..tokens.len() {
+        let remains = &tokens[i..];
+        for tag in tags {
+            if let Some(len) = accept_tokens(remains, tag) {
+                return Some(len);
+            }
+        }
+    }
+    None
+}
 /// 对应 HtmlBlockStart 的判定：给一行内容，返回它是哪一型 HTML 块。
 pub(super) fn parse_html_block_type(tokens: &[u8], in_paragraph: bool) -> Option<u64> {
     let tokens = trim_left_whitespace(tokens);
     if tokens.len() < 3 || tokens[0] != b'<' {
         return None;
     }
-    for tag in ["<script", "<pre", "<style", "<textarea"] {
-        if let Some(rest) = starts_with_ignore_case(tokens, tag.as_bytes()) {
-            if rest.first().is_some_and(|b| is_whitespace(*b) || *b == b'>') {
-                return Some(1);
-            }
+    // 这两组标签都是「整行任意位置出现」就算数，对应 AcceptTokenss。
+    // 例如 `<div ...><pre>echo</pre></div>` 里有 `<pre`，所以这一行是 1 型块，
+    // 不是 6 型——Lute 就是这么判的。
+    if let Some(len) = accept_tokenss(tokens, &[b"<script", b"<pre", b"<style", b"<textarea"]) {
+        if tokens
+            .get(len)
+            .is_some_and(|b| is_whitespace(*b) || *b == b'>')
+        {
+            return Some(1);
         }
     }
-    for tag in HTML_BLOCK_TAGS {
-        // 块级标签按字节精确匹配（区分大小写，对应 Lute 的 AcceptTokenss）
-        if let Some(rest) = tokens.strip_prefix(tag.as_bytes()) {
-            if rest.first().is_some_and(|b| is_whitespace(*b) || *b == b'>') {
-                return Some(6);
-            }
-            if rest.starts_with(b"/>") {
-                return Some(6);
-            }
+    if let Some(len) = accept_tokenss(
+        tokens,
+        &HTML_BLOCK_TAGS.iter().map(|tag| tag.as_bytes()).collect::<Vec<_>>(),
+    ) {
+        if tokens
+            .get(len)
+            .is_some_and(|b| is_whitespace(*b) || *b == b'>')
+        {
+            return Some(6);
+        }
+        if tokens.get(len) == Some(&b'/') && tokens.get(len + 1) == Some(&b'>') {
+            return Some(6);
         }
     }
     let tag = trim_whitespace(tokens);
@@ -51,17 +81,6 @@ pub(super) fn parse_html_block_type(tokens: &[u8], in_paragraph: bool) -> Option
     None
 }
 
-pub(super) fn starts_with_ignore_case<'a>(tokens: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
-    if tokens.len() < prefix.len() {
-        return None;
-    }
-    for (index, byte) in prefix.iter().enumerate() {
-        if !tokens[index].eq_ignore_ascii_case(byte) {
-            return None;
-        }
-    }
-    Some(&tokens[prefix.len()..])
-}
 
 /// 对应 isOpenTag：形如 <a>、<a href="x">、<br /> 的完整开标签。
 pub(super) fn is_open_tag(tokens: &[u8]) -> bool {

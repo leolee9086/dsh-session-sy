@@ -184,7 +184,7 @@ fn is_ascii_letter_num_hyphen(byte: u8) -> bool {
 }
 
 /// 对应 ast.IsNodeIDPattern：14 位数字 + 连字符 + 7 位小写字母数字。
-fn is_node_id_pattern(id: &[u8]) -> bool {
+pub(super) fn is_node_id_pattern(id: &[u8]) -> bool {
     if id.len() != 22 {
         return false;
     }

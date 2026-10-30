@@ -7,6 +7,11 @@ impl<'a> Parser<'a> {
         let start = self.pos;
         let mut count = 0i32;
         while self.pos < self.tokens.len() && self.tokens[self.pos] == typ {
+            // 对应 Lute：标签只用单个井号，连续井号不合并，
+            // 否则相邻标签 #foo##bar# 会被粘成一个
+            if typ == b'#' && self.options.tag && count >= 1 {
+                break;
+            }
             count += 1;
             self.pos += 1;
         }
@@ -46,36 +51,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-/// 对应 processEmphasis 里「找到 opener 之后」的一串前置条件：
-    /// 各种标记的开关、数量必须一致、标签内容不能是空白。
+    /// 对应 processEmphasis 里「找到 opener 之后」的一串前置条件：
+    /// 各种标记的开关、数量必须一致。
     fn pair_allowed(&self, typ: u8, opener: usize, closer: usize) -> bool {
         let opener_num = self.delims[opener].num;
         let closer_num = self.delims[closer].num;
         match typ {
-            b'#' => {
-                if !self.options.tag || opener_num != closer_num {
-                    return false;
-                }
-                // 标签内容去掉插入符和零宽空格后不能是空白
-                let opener_node = self.delims[opener].node;
-                let closer_node = self.delims[closer].node;
-                let Some((parent, start)) = self.find_parent_and_index(opener_node) else {
-                    return false;
-                };
-                let siblings: &[usize] = match parent {
-                    None => &self.root,
-                    Some(index) => &self.nodes[index].children,
-                };
-                let Some(end) = siblings.iter().position(|item| *item == closer_node) else {
-                    return false;
-                };
-                let mut content = String::new();
-                for &node in &siblings[start + 1..end] {
-                    content.push_str(&String::from_utf8_lossy(&self.nodes[node].data));
-                }
-                content.retain(|ch| ch != '\u{2038}' && ch != '\u{200b}');
-                !content.trim().is_empty()
-            }
+            // 标签只要求数量一致：Lute 不检查内容是否为空，
+            // 所以 #**foo**# 里两个 # 之间只有一个 Strong 节点也能配对。
+            b'#' => self.options.tag && opener_num == closer_num,
             b'^' => self.options.sup && opener_num == closer_num,
             b'=' => self.options.mark && opener_num == closer_num,
             b'~' => {

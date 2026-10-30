@@ -138,8 +138,12 @@ impl<'a> Parser<'a> {
                         self.pos = after;
                         matched = true;
                     }
-                } else {
-                    // 目标后跟空白：可能还有标题
+                }
+                // 目标后面跟着空白时，可能还有标题。
+                // Lute 在 matched 被上面的 remains 检查否掉之后也会走到这一段，
+                // 所以这里用独立判断而不是 else —— [foo](bar.com(baz) "bar.com(baz)")
+                // 就是靠这条路径成功的。
+                if !matched && after < self.tokens.len() && is_whitespace(self.tokens[after]) {
                     let mut cursor = after;
                     let space_start = cursor;
                     while cursor < self.tokens.len() && is_whitespace(self.tokens[cursor]) {
