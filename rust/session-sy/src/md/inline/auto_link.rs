@@ -608,9 +608,11 @@ impl<'a> Parser<'a> {
 
             let last = *group.last().unwrap_or(&0);
             if last == b'.' {
-                // 以 . 结尾：剔除这个点，点本身作为文本跟在后头
+                // 以 . 结尾：剔除这个点，点本身作为文本跟在后头。
+                // 注意这一支走 Lute 的 newLink（六个子节点带括号），
+                // 和下面手工构造的紧凑形式不同。
                 group.pop();
-                pieces.push(Piece::CompactLink {
+                pieces.push(Piece::Link {
                     text: group.clone(),
                     dest: with_mailto(&group),
                 });

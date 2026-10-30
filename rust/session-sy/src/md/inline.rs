@@ -10,7 +10,7 @@ mod autolink;
 mod emoji;
 mod bracket;
 mod emphasis;
-mod html;
+pub(crate) mod html;
 mod link;
 mod math;
 mod text;
@@ -56,12 +56,20 @@ struct Bracket {
     bracket_after: bool,
 }
 
+/// 行内解析所在的块类型，某些语法只对特定块生效。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BlockKind {
+    Paragraph,
+    Heading,
+    TableCell,
+}
+
 struct Parser<'a> {
     tokens: &'a [u8],
     /// 引擎配置，决定哪些行内语法启用。
     options: &'a Options,
-    /// 当前块是不是标题（HeadingID 只在标题里生效）。
-    is_heading: bool,
+    /// 当前块类型：HeadingID 只认标题，代码 span 的管道符处理只认表格单元格。
+    kind: BlockKind,
     pos: usize,
     nodes: Vec<Node>,
     root: Vec<usize>,
@@ -76,12 +84,12 @@ pub fn parse(
     tokens: &[u8],
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
     options: &Options,
-    is_heading: bool,
+    kind: BlockKind,
 ) -> Vec<Value> {
     let mut parser = Parser {
         tokens,
         options,
-        is_heading,
+        kind,
         pos: 0,
         nodes: Vec::new(),
         root: Vec::new(),
@@ -108,12 +116,12 @@ pub fn parse_to_json(
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
     out: &mut String,
     options: &Options,
-    is_heading: bool,
+    kind: BlockKind,
 ) {
     let mut parser = Parser {
         tokens,
         options,
-        is_heading,
+        kind,
         pos: 0,
         nodes: Vec::new(),
         root: Vec::new(),
@@ -139,12 +147,12 @@ pub fn parse_to_json_flat(
     out: &mut String,
     first: &mut bool,
     options: &Options,
-    is_heading: bool,
+    kind: BlockKind,
 ) {
     let mut parser = Parser {
         tokens,
         options,
-        is_heading,
+        kind,
         pos: 0,
         nodes: Vec::new(),
         root: Vec::new(),
@@ -335,9 +343,24 @@ fn scan_delims(tokens: &[u8], start: usize, end: usize, typ: u8) -> (bool, bool)
     };
 
     let after_is_whitespace = after.is_whitespace();
-    let after_is_punct = is_punct(after);
+    let mut after_is_punct = is_punct(after);
     let before_is_whitespace = before.is_whitespace();
-    let before_is_punct = is_punct(before);
+    let mut before_is_punct = is_punct(before);
+
+    // Lute 的特例：波浪号紧挨 +/-（或与星号互邻）时不算标点。
+    // 少了这条，"--D-~5199~" 这种路径文本里的 ~ 就无法闭合。
+    if (typ == b'*' && after == '~')
+        || (typ == b'~' && after == '*')
+        || (typ == b'~' && (after == '+' || after == '-'))
+    {
+        after_is_punct = false;
+    }
+    if (typ == b'*' && before == '~')
+        || (typ == b'~' && before == '*')
+        || (typ == b'~' && (before == '+' || before == '-'))
+    {
+        before_is_punct = false;
+    }
 
     let is_left_flanking = !after_is_whitespace && (!after_is_punct || before_is_whitespace || before_is_punct);
     let is_right_flanking = !before_is_whitespace && (!before_is_punct || after_is_whitespace || after_is_punct);

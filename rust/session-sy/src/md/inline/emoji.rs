@@ -49,6 +49,12 @@ impl<'a> Parser<'a> {
             let child = self.children_get(parent, index);
             let ty = self.nodes[child].node_type;
             if ty == "NodeText" || ty == "NodeLinkText" {
+                // Lute 的 emoji0 对空内容的文本节点会一路走到最后的 Unlink，这里照做。
+                // 典型来源：段落换行前的尾随空格被 parseNewline 裁掉后剩下的空文本节点。
+                if self.nodes[child].data.is_empty() {
+                    self.children_replace(parent, index, Vec::new());
+                    continue;
+                }
                 if let Some(pieces) = self.split_emoji(child) {
                     let items = self.materialize_emoji(child, pieces);
                     let count = items.len();
@@ -64,6 +70,9 @@ impl<'a> Parser<'a> {
     }
 
     /// 对应 `emoji0`：把一个文本节点拆成 文本/Emoji 序列。
+    ///
+    /// 关键点：Lute 是往同一个 node 的 Tokens 里 append，所以没命中 Emoji 的碎片
+    /// （比如 `:` 这种标记符）最终仍然是同一段连续文本，不能一段一个节点。
     fn split_emoji(&mut self, node: usize) -> Option<Vec<EmojiPiece>> {
         let tokens = self.nodes[node].data.clone();
         if tokens.is_empty() || !tokens.contains(&b':') {
@@ -71,20 +80,21 @@ impl<'a> Parser<'a> {
         }
         let length = tokens.len();
         let mut pieces: Vec<EmojiPiece> = Vec::new();
+        let mut buffer: Vec<u8> = Vec::new();
         let mut pos = 0usize;
         let mut i = 0usize;
         let mut changed = false;
 
         while i < length {
             if i == length - 1 {
-                pieces.push(EmojiPiece::Text(tokens[pos..].to_vec()));
+                buffer.extend_from_slice(&tokens[pos..]);
                 break;
             }
             if tokens[i] != b':' {
                 i += 1;
                 continue;
             }
-            pieces.push(EmojiPiece::Text(tokens[pos..i].to_vec()));
+            buffer.extend_from_slice(&tokens[pos..i]);
 
             let mut matched = false;
             pos = i + 1;
@@ -100,27 +110,30 @@ impl<'a> Parser<'a> {
                 pos += 1;
             }
             if !matched {
-                pieces.push(EmojiPiece::Text(tokens[i..pos].to_vec()));
+                buffer.extend_from_slice(&tokens[i..pos]);
                 i += 1;
                 continue;
             }
 
             let alias_inner = &tokens[i + 1..pos];
             if alias_inner.is_empty() {
-                pieces.push(EmojiPiece::Text(vec![tokens[pos]]));
+                buffer.push(tokens[pos]);
                 i += 1;
                 continue;
             }
 
             let Some(value) = alias_map().get(std::str::from_utf8(alias_inner).unwrap_or("")) else {
                 // 不在表里：原样保留 :alias:
-                pieces.push(EmojiPiece::Text(tokens[i..pos + 1].to_vec()));
+                buffer.extend_from_slice(&tokens[i..pos + 1]);
                 pos += 1;
                 i = pos;
                 continue;
             };
 
             changed = true;
+            if !buffer.is_empty() {
+                pieces.push(EmojiPiece::Text(std::mem::take(&mut buffer)));
+            }
             pieces.push(EmojiPiece::Emoji {
                 alias: tokens[i..pos + 1].to_vec(),
                 value: value.as_bytes().to_vec(),
@@ -129,6 +142,9 @@ impl<'a> Parser<'a> {
             i = pos;
         }
 
+        if !buffer.is_empty() {
+            pieces.push(EmojiPiece::Text(buffer));
+        }
         if changed {
             Some(pieces)
         } else {

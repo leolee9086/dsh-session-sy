@@ -51,6 +51,22 @@ impl<'a> Parser<'a> {
         self.append(node);
     }
 
+    /// 把 `\\|` 还原成 `|`。
+    fn replace_escaped_pipe(tokens: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut i = 0usize;
+    while i < tokens.len() {
+        if tokens[i] == b'\\' && i + 1 < tokens.len() && tokens[i + 1] == b'|' {
+            out.push(b'|');
+            i += 2;
+            continue;
+        }
+        out.push(tokens[i]);
+        i += 1;
+    }
+    out
+}
+
     /// 对应 parseNewline：前一个文本节点以两个以上空格结尾就是硬换行。
     pub(super) fn parse_newline(&mut self) {
         let pos = self.pos;
@@ -76,7 +92,7 @@ impl<'a> Parser<'a> {
 
 /// 对应 `parseHeadingID`：标题末尾的 `{id}`。
     pub(super) fn parse_heading_id(&mut self) {
-        if !self.options.heading_id || !self.is_heading || self.tokens.len() < 3 {
+        if !self.options.heading_id || self.kind != super::BlockKind::Heading || self.tokens.len() < 3 {
             self.pos += 1;
             self.push_text(vec![b'{']);
             return;
@@ -169,6 +185,10 @@ impl<'a> Parser<'a> {
             close_marker_data = vec![content[content.len() - 1]];
             close_marker_data.extend(std::iter::repeat(0x60u8 as u8).take(run));
             content = content[1..content.len() - 1].to_vec();
+        }
+        // 表格单元格里的代码 span 要把 \| 还原成 |（对应 Lute code_span.go:56-61）
+        if self.options.gfm_table && self.kind == super::BlockKind::TableCell {
+            content = Self::replace_escaped_pipe(&content);
         }
         let span = self.new_node("NodeCodeSpan");
         self.nodes[span].attrs.push(("CodeMarkerLen", json!(run)));

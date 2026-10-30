@@ -28,19 +28,36 @@ impl<'a> Parser<'a> {
                 }
             }
         } else if tokens[start + 1..].starts_with(b"!--") {
-            // Lute 的注释以第一个 > 结束（<!--> 也算完整的行内 HTML）
-            end = find_sequence(tokens, start + 4, b">").map(|at| at + 1);
+            // 对应 parseHTMLComment：注释必须以 --> 结尾，从 `!` 起逐字符找
+            end = find_comment_end(tokens, start + 1);
         } else if tokens[start + 1..].starts_with(b"![CDATA[") {
             end = find_sequence(tokens, start + 9, b"]]>").map(|at| at + 3);
         } else if tokens[start + 1] == b'?' {
             end = find_sequence(tokens, start + 2, b"?>").map(|at| at + 2);
         } else if tokens[start + 1] == b'!' {
-            end = find_sequence(tokens, start + 2, b">").map(|at| at + 1);
+            // 对应 parseDeclaration：`!` 之后必须全是大写字母（遇到空白为止），
+            // 否则 `<!x` 这种会被误判成声明。
+            let mut i = start + 2;
+            let mut valid = true;
+            while i < tokens.len() {
+                let token = tokens[i];
+                if is_whitespace(token) {
+                    break;
+                }
+                if !token.is_ascii_uppercase() {
+                    valid = false;
+                    break;
+                }
+                i += 1;
+            }
+            if valid {
+                end = find_sequence(tokens, start + 2, b">").map(|at| at + 1);
+            }
         } else if let Some((mut next, name)) = parse_tag_name(tokens, start + 1) {
             if !name.is_empty() {
                 let mut valid = true;
                 loop {
-                    let (ok, after, attr) = tag_attr(tokens, next);
+                    let (ok, after, attr, _, _) = tag_attr(tokens, next);
                     if !ok {
                         valid = false;
                         break;
@@ -153,6 +170,19 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// 对应 parseHTMLComment 的扫描部分：从 `!` 起找 `-->`，找不到返回 None。
+fn find_comment_end(tokens: &[u8], from: usize) -> Option<usize> {
+    let length = tokens.len();
+    let mut i = from;
+    while i < length {
+        if i + 2 < length && tokens[i] == b'-' && tokens[i + 1] == b'-' && tokens[i + 2] == b'>' {
+            return Some(i + 3);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// 对应 parseTagName。
 fn parse_tag_name(tokens: &[u8], from: usize) -> Option<(usize, Vec<u8>)> {
     if from >= tokens.len() || !tokens[from].is_ascii_alphabetic() {
@@ -171,8 +201,13 @@ fn parse_tag_name(tokens: &[u8], from: usize) -> Option<(usize, Vec<u8>)> {
     Some((i, name))
 }
 
-/// 对应 TagAttr：返回 (是否合法, 新位置, 属性原文)。
-fn tag_attr(tokens: &[u8], from: usize) -> (bool, usize, Vec<u8>) {
+/// 对应 TagAttr：返回 (是否合法, 新位置, 属性原文, 属性名, 属性值)。
+///
+/// 属性值对应 Lute 的 `valSpec[2 : len(valSpec)-1]`，即去掉 `="` 与结尾的引号。
+pub(crate) fn tag_attr(
+    tokens: &[u8],
+    from: usize,
+) -> (bool, usize, Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut i = from;
     let mut whitespace: Vec<u8> = Vec::new();
     while i < tokens.len() && is_whitespace(tokens[i]) {
@@ -180,21 +215,26 @@ fn tag_attr(tokens: &[u8], from: usize) -> (bool, usize, Vec<u8>) {
         i += 1;
     }
     if whitespace.is_empty() {
-        return (true, from, Vec::new());
+        return (true, from, Vec::new(), Vec::new(), Vec::new());
     }
     let Some((after_name, name)) = parse_attr_name(tokens, i) else {
-        return (true, from, Vec::new());
+        return (true, from, Vec::new(), Vec::new(), Vec::new());
     };
     i = after_name;
     let (valid, after_value, value_spec) = parse_attr_val_spec(tokens, i);
     if !valid {
-        return (false, from, Vec::new());
+        return (false, from, Vec::new(), Vec::new(), Vec::new());
     }
     i = after_value;
     let mut attr = whitespace;
     attr.extend_from_slice(&name);
     attr.extend_from_slice(&value_spec);
-    (true, i, attr)
+    let value = if value_spec.len() >= 3 {
+        value_spec[2..value_spec.len() - 1].to_vec()
+    } else {
+        Vec::new()
+    };
+    (true, i, attr, name, value)
 }
 
 /// 对应 parseAttrName。

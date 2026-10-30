@@ -9,6 +9,7 @@ mod r#continue;
 mod finalize;
 mod html;
 mod inline;
+mod ial;
 mod options;
 mod render;
 mod start;
@@ -91,6 +92,8 @@ pub fn parse_to_json_with(src: &str, options: &Options) -> String {
     let root = parser.add_root();
     parser.tip = Some(root);
     parser.parse_blocks(src);
+    // 段落形式的块级 IAL 要在行内解析前并到前一个块上
+    parser.merge_paragraph_ial();
     // 预留：Lute 风格的 JSON 一般是原文的 4-17 倍（列表/内联比纯文本膨胀得多）。
     // 取 8 倍折中，不够时 String 自己翻倍，总 memcpy 也就两倍最终大小。
     let mut out = String::with_capacity(src.len() * 8 + 256);
@@ -111,6 +114,8 @@ pub fn parse_with(src: &str, options: &Options) -> Value {
     let root = parser.add_root();
     parser.tip = Some(root);
     parser.parse_blocks(src);
+    // 段落形式的块级 IAL 要在行内解析前并到前一个块上
+    parser.merge_paragraph_ial();
     parser.render(root)
 }
 
@@ -368,6 +373,62 @@ impl Parser {
             return Some((self.tip?, true));
         }
         None
+    }
+
+/// 对应 walkParseInline 里对段落 IAL 的处理：以 `{: ` 开头的段落会把属性
+    /// 合并到前一个兄弟块，然后自身消失。
+    ///
+    /// 注意 Lute 这一处**不检查** `KramdownBlockIAL` 开关，所以 default 配置下也生效。
+    fn merge_paragraph_ial(&mut self) {
+        self.merge_paragraph_ial_in(0);
+    }
+
+    fn merge_paragraph_ial_in(&mut self, parent: usize) {
+        let mut index = 0usize;
+        while index < self.nodes[parent].children.len() {
+            let child = self.nodes[parent].children[index];
+            if self.nodes[child].node_type == "NodeParagraph" && index > 0 {
+                let tokens = self.nodes[child].tokens.clone();
+                if let Some(pairs) = ial::parse_block_ial(&tokens) {
+                    let previous = self.nodes[parent].children[index - 1];
+                    self.set_ial_attrs(previous, &pairs);
+                    self.nodes[parent].children.remove(index);
+                    continue;
+                }
+            }
+            index += 1;
+        }
+        // 递归处理容器块内部
+        let children = self.nodes[parent].children.clone();
+        for child in children {
+            if !self.nodes[child].children.is_empty() {
+                self.merge_paragraph_ial_in(child);
+            }
+        }
+    }
+
+    /// 把 IAL 键值合并进节点的 `Properties` 属性（同名覆盖）。
+    fn set_ial_attrs(&mut self, node: usize, pairs: &[(Vec<u8>, Vec<u8>)]) {
+        let mut map = match self.nodes[node]
+            .attrs
+            .iter()
+            .find(|(key, _)| *key == "Properties")
+        {
+            Some((_, value)) => value.as_object().cloned().unwrap_or_default(),
+            None => serde_json::Map::new(),
+        };
+        for (key, value) in pairs {
+            map.insert(
+                String::from_utf8_lossy(key).to_string(),
+                Value::String(String::from_utf8_lossy(value).to_string()),
+            );
+        }
+        self.nodes[node]
+            .attrs
+            .retain(|(key, _)| *key != "Properties");
+        self.nodes[node]
+            .attrs
+            .push(("Properties", Value::Object(map)));
     }
 
     /// 对应 ast.Node.AcceptLines：能吸收原始行的块类型。
