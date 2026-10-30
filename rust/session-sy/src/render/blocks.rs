@@ -48,6 +48,13 @@ pub(super) fn message_callout(
         let mut properties = Map::new();
         properties.insert("id".into(), json!(id));
         properties.insert(INDEX_ATTR.into(), json!(index.to_string()));
+        if profile == Profile::Spin {
+            // 图片子调用同样是事件：不带它，这份 spin 文档就还原不回去
+            properties.insert(
+                EVENT_ATTR.into(),
+                json!(base64(event.to_string().as_bytes())),
+            );
+        }
         return Some(json!({
             "ID": id,
             "Type": "NodeCallout",
