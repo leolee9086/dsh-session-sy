@@ -84,7 +84,13 @@ impl Parser {
     }
 
     fn list_item_continue(&mut self, node: usize) -> i32 {
-        let Some(data) = self.nodes[node].list_data.clone() else {
+        // 只要两个缩进数字，不必把整个 ListData 连 String 一起 clone 一份——
+        // 这个函数每行、每个列表项容器都会被调到。
+        let Some(indent_needed) = self.nodes[node]
+            .list_data
+            .as_ref()
+            .map(|data| data.marker_offset + data.padding)
+        else {
             return 1;
         };
         if self.blank {
@@ -94,8 +100,8 @@ impl Parser {
             self.advance_next_nonspace();
             return 0;
         }
-        if self.indent >= data.marker_offset + data.padding {
-            self.advance_offset(data.marker_offset + data.padding, true);
+        if self.indent >= indent_needed {
+            self.advance_offset(indent_needed, true);
             return 0;
         }
         1

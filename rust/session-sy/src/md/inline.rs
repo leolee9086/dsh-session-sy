@@ -12,7 +12,11 @@ mod html;
 mod link;
 mod text;
 
+use std::fmt::Write as _;
+
 use serde_json::{json, Value};
+
+use super::util::write_json_string;
 
 pub(crate) use link::*;
 
@@ -78,6 +82,49 @@ pub fn parse(
     parser.render()
 }
 
+/// 直出路径的入口：解析行内内容，直接把 JSON 写进 out。
+///
+/// 和 `parse()` 同语义，只是不返回 Value 数组。
+pub fn parse_to_json(
+    tokens: &[u8],
+    defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
+    out: &mut String,
+) {
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        nodes: Vec::new(),
+        root: Vec::new(),
+        delims: Vec::new(),
+        top: None,
+        brackets: Vec::new(),
+        defs,
+    };
+    parser.run();
+    parser.write_nodes_json(out);
+}
+
+/// 直出路径的平铺版本：把行内节点顺次写进外层的数组，不额外套方括号。
+pub fn parse_to_json_flat(
+    tokens: &[u8],
+    defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
+    out: &mut String,
+    first: &mut bool,
+) {
+    let mut parser = Parser {
+        tokens,
+        pos: 0,
+        nodes: Vec::new(),
+        root: Vec::new(),
+        delims: Vec::new(),
+        top: None,
+        brackets: Vec::new(),
+        defs,
+    };
+    parser.run();
+    parser.write_nodes_flat_json(out, first);
+}
+
 impl<'a> Parser<'a> {
     fn new_node(&mut self, node_type: &'static str) -> usize {
         self.nodes.push(Node {
@@ -126,6 +173,67 @@ impl<'a> Parser<'a> {
     /// 对应 handleDelim + scanDelims。
     fn render(&self) -> Vec<Value> {
         self.root.iter().map(|index| self.render_node(*index)).collect()
+    }
+
+    /// 直出路径：把行内节点直接写成 JSON 文本，不构造 Value 树。
+    ///
+    /// 输出语义和 `render()` 完全一致，区别只在于不分配中间对象——
+    /// Value 树里每个 key 都是一次 String 分配，段落级别的节点动辄十几次。
+    pub(super) fn write_nodes_json(&self, out: &mut String) {
+        out.push('[');
+        let mut first = true;
+        self.write_nodes_flat_json(out, &mut first);
+        out.push(']');
+    }
+
+    /// 把行内节点平铺写进一个已经在写的数组（标题的 Children 就是这样拼的）。
+    pub(super) fn write_nodes_flat_json(&self, out: &mut String, first: &mut bool) {
+        for index in &self.root {
+            if !*first {
+                out.push(',');
+            }
+            *first = false;
+            self.write_node_json(*index, out);
+        }
+    }
+
+    fn write_node_json(&self, index: usize, out: &mut String) {
+        let node = &self.nodes[index];
+        // 快速路径：纯文本节点是行内最常见的（普通段落里几乎只有它），
+        // 直接写死 "NodeText" 外壳，省掉一次转义和几轮分支判断。
+        if node.node_type == "NodeText"
+            && node.children.is_empty()
+            && node.attrs.is_empty()
+            && !node.data.is_empty()
+        {
+            out.push_str("{\"Type\":\"NodeText\",\"Data\":");
+            write_json_string(out, &String::from_utf8_lossy(&node.data));
+            out.push('}');
+            return;
+        }
+        out.push_str("{\"Type\":");
+        write_json_string(out, node.node_type);
+        if !node.children.is_empty() {
+            out.push_str(",\"Children\":[");
+            for (i, child) in node.children.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                self.write_node_json(*child, out);
+            }
+            out.push(']');
+        } else if !node.data.is_empty() {
+            out.push_str(",\"Data\":");
+            write_json_string(out, &String::from_utf8_lossy(&node.data));
+        }
+        for (key, value) in &node.attrs {
+            out.push(',');
+            write_json_string(out, key);
+            out.push(':');
+            // 这几个属性值是解析期就定下来的小 JSON，直接借 serde 的紧凑输出
+            let _ = write!(out, "{}", value);
+        }
+        out.push('}');
     }
 
     fn render_node(&self, index: usize) -> Value {

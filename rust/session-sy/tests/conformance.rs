@@ -37,3 +37,45 @@ fn commonmark_conformance() {
         failures.join("\n")
     );
 }
+
+/// 直出路径必须和 Value 路径产出同一棵树。
+///
+/// `parse_to_json` 直接拼 JSON 文本，不经过 serde 的序列化器，
+/// 所以字符串转义（引号、反斜杠、控制符、非 ASCII）全靠自己的实现。
+/// 这里把它的输出解析回 Value 再比对，覆盖到转义的每一条规则。
+#[test]
+fn direct_json_matches_tree() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/commonmark-fixtures.json");
+    let text = std::fs::read_to_string(path).expect("读取 fixtures 失败");
+    let cases: Vec<Value> = serde_json::from_str(&text).expect("fixtures 不是 JSON 数组");
+
+    let mut failures: Vec<String> = Vec::new();
+    for case in &cases {
+        let markdown = case.get("markdown").and_then(Value::as_str).unwrap_or("");
+        let tree = session_sy::md::parse(markdown);
+        let direct = session_sy::md::parse_to_json(markdown);
+        let reparsed: Value = match serde_json::from_str(&direct) {
+            Ok(value) => value,
+            Err(error) => {
+                let example = case.get("example").and_then(Value::as_u64).unwrap_or(0);
+                failures.push(format!("#{example} 直出不是合法 JSON: {error}\n  {direct}"));
+                continue;
+            }
+        };
+        if reparsed != tree {
+            let example = case.get("example").and_then(Value::as_u64).unwrap_or(0);
+            failures.push(format!(
+                "#{example} 直出与树不一致\n  直出: {direct}\n  树: {tree}"
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} / {} 条直出不一致：\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+

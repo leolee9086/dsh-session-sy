@@ -200,7 +200,7 @@ impl Parser {
             if list_data.typ == 1 {
                 list_data.num = data.start;
             }
-            self.nodes[list].list_data = Some(list_data);
+            self.nodes[list].list_data = Some(Box::new(list_data));
         }
         let item = self.add_child("NodeListItem");
         // 有序列表的序号：首项用标记里的起始号，其余按前一项递增。
@@ -223,7 +223,7 @@ impl Parser {
             }
             item_data.num = number;
         }
-        self.nodes[item].list_data = Some(item_data);
+        self.nodes[item].list_data = Some(Box::new(item_data));
         true
     }
 

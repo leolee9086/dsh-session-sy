@@ -28,8 +28,9 @@ struct Node {
     tokens: Vec<u8>,
     /// 额外字段，序列化时原样带上。
     attrs: Vec<(&'static str, Value)>,
-    /// 列表数据。
-    list_data: Option<ListData>,
+    /// 列表数据。放 Box 里：nodes 是最热的数组，内嵌 ListData 会把每个元素
+    /// 撑大 60 多字节，而只有列表/列表项节点才真的用它。
+    list_data: Option<Box<ListData>>,
     /// 末行是否为空行，用于判断列表紧凑/松散。
     last_line_blank: bool,
 }
@@ -69,7 +70,26 @@ struct Parser {
     all_closed: bool,
 }
 
+/// 解析 markdown，直接输出 Lute 风格的 JSON 文本。
+///
+/// 这是最快路径：不构造 serde_json::Value 树，直接把 JSON 写进一个 String。
+/// Value 树里每个 key 都是一次堆分配，一个段落节点要十几次；直出把这部分
+/// 摊平成一次缓冲区追加。
+pub fn parse_to_json(src: &str) -> String {
+    let mut parser = Parser::new();
+    let root = parser.add_root();
+    parser.tip = Some(root);
+    parser.parse_blocks(src);
+    // 预留：Lute 风格的 JSON 一般是原文的 4-17 倍（列表/内联比纯文本膨胀得多）。
+    // 取 8 倍折中，不够时 String 自己翻倍，总 memcpy 也就两倍最终大小。
+    let mut out = String::with_capacity(src.len() * 8 + 256);
+    parser.write_json(root, &mut out);
+    out
+}
+
 /// 解析 markdown，返回 NodeDocument。
+///
+/// 需要操作树（往文档里塞节点）时用这个；只想要 JSON 文本时用 `parse_to_json`。
 pub fn parse(src: &str) -> Value {
     let mut parser = Parser::new();
     let root = parser.add_root();
@@ -122,9 +142,15 @@ impl Parser {
 
     /// 对应 Lute 的 parseBlocks：逐行喂给 incorporateLine，最后关闭所有未闭合块。
     fn parse_blocks(&mut self, src: &str) {
-        let lines: Vec<Vec<u8>> = src.split_inclusive('\n').map(|line| line.as_bytes().to_vec()).collect();
-        for line in &lines {
-            self.incorporate_line(line);
+        // 预留节点容量：节点数组是全程最热的分配，按经验每 12 字节原文约一个节点。
+        // 一次给足，省掉十几轮翻倍扩容和整表 memcpy。
+        self.nodes.reserve(src.len() / 12);
+        // 行缓冲也先按最长的一行给个底，后面每行都复用这块内存。
+        self.current_line.reserve(256);
+        // 逐行切片直接喂进去，不为每行做一次 Vec 分配：
+        // 大文档动辄上万行，每行一次 malloc 会变成主导成本。
+        for line in src.split_inclusive('\n') {
+            self.incorporate_line(line.as_bytes());
         }
         while let Some(tip) = self.tip {
             self.finalize(tip);
@@ -138,7 +164,9 @@ impl Parser {
         self.column = 0;
         self.blank = false;
         self.partially_consumed_tab = false;
-        self.current_line = line.to_vec();
+        // 复用 current_line 的容量：clear 不释放堆内存，后面的行直接覆盖写入。
+        self.current_line.clear();
+        self.current_line.extend_from_slice(line);
 
         let mut all_matched = true;
         let mut container = 0usize;
@@ -300,11 +328,23 @@ impl Parser {
         if self.partially_consumed_tab {
             start += 1;
             let spaces = 4 - (self.column % 4);
-            self.nodes[tip].tokens.extend(std::iter::repeat(b' ').take(spaces));
+            let tokens = &mut self.nodes[tip].tokens;
+            // 首次写入时一次给足：Vec 默认从 8 字节起步，一个 24 字节的段落
+            // 要经历 8→16→32 三次分配，而绝大多数块只有一两行。
+            if tokens.capacity() == 0 {
+                tokens.reserve(spaces + 32);
+            }
+            tokens.extend(std::iter::repeat(b' ').take(spaces));
         }
         if start < self.current_line.len() {
-            let tail = self.current_line[start..].to_vec();
-            self.nodes[tip].tokens.extend_from_slice(&tail);
+            // 字段级分借：nodes 要可变、current_line 只读，避免再复制一份临时 Vec。
+            let tail_len = self.current_line.len() - start;
+            let nodes = &mut self.nodes;
+            let tokens = &mut nodes[tip].tokens;
+            if tokens.capacity() == 0 {
+                tokens.reserve(tail_len + 32);
+            }
+            tokens.extend_from_slice(&self.current_line[start..]);
         }
     }
 
@@ -444,3 +484,20 @@ impl Parser {
 
 
 
+
+/// 仅供基准诊断：只跑块解析这一段，返回纳秒数。
+///
+/// `examples/bench_stages.rs` 用它把「块解析」和「JSON 渲染」分开看。
+/// 正常路径不经过这里，改解析逻辑时不需要管它。
+#[doc(hidden)]
+pub fn bench_blocks_nanos(src: &str) -> u64 {
+    let mut parser = Parser::new();
+    let root = parser.add_root();
+    parser.tip = Some(root);
+    let start = std::time::Instant::now();
+    parser.parse_blocks(src);
+    let blocks = start.elapsed().as_nanos() as u64;
+    // 防止整段被优化掉
+    std::hint::black_box(&parser.nodes);
+    blocks
+}

@@ -4,3 +4,6 @@ rust/*/target/
 # 临时文件与导出产物（.tmp- 开头的文件和目录都算）
 .tmp-*
 *.sy
+
+# Go 构建产物（ti/bench 的 .exe 都是本地编出来的）
+*.exe
