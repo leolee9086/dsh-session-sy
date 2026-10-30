@@ -117,42 +117,6 @@ pub fn parse(
     parser.render()
 }
 
-/// 直出路径的入口：解析行内内容，直接把 JSON 写进 out。
-///
-/// 和 `parse()` 同语义，只是不返回 Value 数组。
-pub fn parse_to_json(
-    tokens: &[u8],
-    defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
-    footnotes: &[(Vec<u8>, usize)],
-    footnotes_used: &std::cell::RefCell<Vec<usize>>,
-    out: &mut String,
-    options: &Options,
-    kind: BlockKind,
-) {
-    let mut parser = Parser {
-        tokens,
-        options,
-        kind,
-        pos: 0,
-        nodes: Vec::new(),
-        root: Vec::new(),
-        delims: Vec::new(),
-        top: None,
-        brackets: Vec::new(),
-        defs,
-        footnotes,
-        footnotes_used,
-    };
-    parser.run();
-    if options.gfm_auto_link {
-        parser.apply_auto_links();
-    }
-    if options.emoji {
-        parser.apply_emoji();
-    }
-    parser.write_nodes_json(out);
-}
-
 /// 直出路径的平铺版本：把行内节点顺次写进外层的数组，不额外套方括号。
 pub fn parse_to_json_flat(
     tokens: &[u8],
@@ -243,21 +207,9 @@ impl<'a> Parser<'a> {
         self.merge_text();
     }
 
-    /// 对应 parseText：一直吃到下一个潜在标记符。
-    /// 对应 handleDelim + scanDelims。
+    /// 对应 render：把根节点列表转成 Value 数组。
     fn render(&self) -> Vec<Value> {
         self.root.iter().map(|index| self.render_node(*index)).collect()
-    }
-
-    /// 直出路径：把行内节点直接写成 JSON 文本，不构造 Value 树。
-    ///
-    /// 输出语义和 `render()` 完全一致，区别只在于不分配中间对象——
-    /// Value 树里每个 key 都是一次 String 分配，段落级别的节点动辄十几次。
-    pub(super) fn write_nodes_json(&self, out: &mut String) {
-        out.push('[');
-        let mut first = true;
-        self.write_nodes_flat_json(out, &mut first);
-        out.push(']');
     }
 
     /// 把行内节点平铺写进一个已经在写的数组（标题的 Children 就是这样拼的）。

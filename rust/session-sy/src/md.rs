@@ -459,10 +459,6 @@ impl Parser {
         None
     }
 
-/// 对应 walkParseInline 里对段落 IAL 的处理：以 `{: ` 开头的段落会把属性
-    /// 合并到前一个兄弟块，然后自身消失。
-    ///
-    /// 注意 Lute 这一处**不检查** `KramdownBlockIAL` 开关，所以 default 配置下也生效。
     /// 收集脚注定义，并按文档顺序预扫引用。
     ///
     /// 行内解析发生在渲染阶段，而脚注定义块可能排在引用之前，
@@ -536,6 +532,10 @@ impl Parser {
         order
     }
 
+    /// 对应 walkParseInline 里对段落 IAL 的处理：以 `{: ` 开头的段落会把属性
+    /// 合并到前一个兄弟块，然后自身消失。
+    ///
+    /// 注意 Lute 这一处**不检查** `KramdownBlockIAL` 开关，所以 default 配置下也生效。
     fn merge_paragraph_ial(&mut self) {
         self.merge_paragraph_ial_in(0);
     }
