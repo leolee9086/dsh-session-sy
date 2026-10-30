@@ -4,6 +4,7 @@
 //! 单元格内容仍以 tokens 形式返回，交给行内解析阶段处理（对应 Lute 的
 //! `NodeTableCell` 走 `walkParseInline`）。
 
+use super::inline::html::tag_attr;
 use super::util::trim_whitespace;
 
 /// 解析出来的表格数据，尚未变成节点。
@@ -307,7 +308,121 @@ use serde_json::json;
 
 use super::Parser;
 
+/// 对应 parseKramdownSpanIAL：从 `{: ...}` 里解析属性，返回 (结束位置, 键值对)。
+///
+/// 结束位置是第一个 `}` 的下标，调用方用它切出 IAL 原文。
+fn parse_kramdown_span_ial(tokens: &[u8]) -> Option<(usize, Vec<(Vec<u8>, Vec<u8>)>)> {
+    let close = tokens.iter().position(|&b| b == b'}')?;
+    if !tokens.starts_with(b"{:") || 2 >= close {
+        return None;
+    }
+    let mut rest = &tokens[2..close];
+    let mut pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    loop {
+        let (valid, remains, attr, name, value) = tag_attr(rest, 0);
+        if !valid || attr.is_empty() {
+            break;
+        }
+        pairs.push((name, value));
+        rest = &rest[remains..];
+    }
+    if pairs.is_empty() {
+        None
+    } else {
+        Some((close, pairs))
+    }
+}
+
+/// 对应 TableCellStyleAlign：从 style 里抽出 text-align。
+fn table_cell_style_align(style: &str) -> Option<i64> {
+    for declaration in style.split(';') {
+        let Some((property, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        if !property.trim().eq_ignore_ascii_case("text-align") {
+            continue;
+        }
+        let value = value.trim();
+        let value = value.strip_suffix("!important").unwrap_or(value).trim();
+        return Some(match value.to_ascii_lowercase().as_str() {
+            "left" => 1,
+            "center" => 2,
+            "right" => 3,
+            _ => 0,
+        });
+    }
+    None
+}
+
+/// 对应 isTableCellIAL：只有这些属性需要随表格单元格往返保留。
+fn is_table_cell_ial(pairs: &[(Vec<u8>, Vec<u8>)]) -> bool {
+    for (name, value) in pairs {
+        match name.as_slice() {
+            b"colspan" | b"rowspan" | b"style" => return true,
+            b"class" => {
+                if String::from_utf8_lossy(value)
+                    .split_whitespace()
+                    .any(|class| class == "fn__none")
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 impl Parser {
+    /// 建一个表格单元格：摘出末尾的 span IAL，设成 Properties 并加一个子节点。
+    ///
+    /// 对应 Lute `parseTable0` 里那段「提取表头/数据行单元格的结构和样式 IAL」，
+    /// 它不受 KramdownSpanIAL 开关控制。实测 Lute 的输出里那个 NodeKramdownSpanIAL
+    /// 是单元格的孩子，所以这里按孩子挂。
+    fn build_table_cell(&mut self, tokens: &[u8], align: i64) -> Vec<usize> {
+        let cell = self.new_node("NodeTableCell");
+        let mut content = tokens.to_vec();
+        let mut cell_align = align;
+        let mut span: Option<usize> = None;
+        // 单元格末尾的 {: ...} 才是 IAL，用最后一个 "{:" 定位
+        if let Some(at) = content.windows(2).rposition(|window| window == b"{:") {
+            if let Some((close, pairs)) = parse_kramdown_span_ial(&content[at..]) {
+                if is_table_cell_ial(&pairs) {
+                    let ial_tokens = content[at..at + close + 1].to_vec();
+                    content.drain(at..at + close + 1);
+                    // style 里的 text-align 优先于分隔行的对齐
+                    if let Some((_, style)) = pairs.iter().find(|(name, _)| name == b"style") {
+                        if let Some(value) =
+                            table_cell_style_align(&String::from_utf8_lossy(style))
+                        {
+                            cell_align = value;
+                        }
+                    }
+                    let mut map = serde_json::Map::new();
+                    for (name, value) in &pairs {
+                        map.insert(
+                            String::from_utf8_lossy(name).to_string(),
+                            serde_json::Value::String(String::from_utf8_lossy(value).to_string()),
+                        );
+                    }
+                    self.nodes[cell]
+                        .attrs
+                        .push(("Properties", serde_json::Value::Object(map)));
+                    // 实测 Lute 把 span IAL 插成单元格的兄弟（InsertAfter），不是孩子
+                    let node = self.new_node("NodeKramdownSpanIAL");
+                    self.nodes[node].tokens = ial_tokens;
+                    span = Some(node);
+                }
+            }
+        }
+        self.nodes[cell].tokens = content;
+        self.set_cell_align(cell, cell_align);
+        let mut result = vec![cell];
+        if let Some(span) = span {
+            result.push(span);
+        }
+        result
+    }
     /// 对应 Lute 的 `parseTable`：从段落 tokens 里识别表格并就地转换。
     ///
     /// 返回 true 表示这一段已经被表格占用，调用方不要再把 Tip 复位。
@@ -344,10 +459,10 @@ impl Parser {
         let head_row = self.new_node("NodeTableRow");
         self.append_child(head, head_row);
         for (index, cell_tokens) in table.head_cells.iter().enumerate() {
-            let cell = self.new_node("NodeTableCell");
-            self.nodes[cell].tokens = cell_tokens.clone();
-            self.set_cell_align(cell, aligns[index]);
-            self.append_child(head_row, cell);
+            let align = aligns.get(index).copied().unwrap_or(0);
+            for cell in self.build_table_cell(cell_tokens, align) {
+                self.append_child(head_row, cell);
+            }
         }
 
         let mut data_rows = Vec::with_capacity(table.rows.len());
@@ -357,10 +472,10 @@ impl Parser {
                 .attrs
                 .push(("TableAligns", json!(aligns)));
             for (index, cell_tokens) in row.iter().enumerate() {
-                let cell = self.new_node("NodeTableCell");
-                self.nodes[cell].tokens = cell_tokens.clone();
-                self.set_cell_align(cell, aligns[index]);
-                self.append_child(table_row, cell);
+                let align = aligns.get(index).copied().unwrap_or(0);
+                for cell in self.build_table_cell(cell_tokens, align) {
+                    self.append_child(table_row, cell);
+                }
             }
             data_rows.push(table_row);
         }

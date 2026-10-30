@@ -92,16 +92,18 @@ impl Parser {
                 Value::Object(object)
             }
             "NodeTableCell" => {
-                // 单元格和段落一样走行内解析；空单元格不写 Children
-                let children =
-                    inline::parse(
-                        &node.tokens,
-                        &self.link_ref_defs,
-                        &self.footnotes_defs,
-                        &self.footnotes_used,
-                        &self.options,
-                        inline::BlockKind::TableCell,
-                    );
+                // 单元格和段落一样走行内解析；空单元格不写 Children。
+                // 单元格自己也可能有孩子（摘出来的 span IAL），先渲染它们。
+                let mut children: Vec<Value> =
+                    node.children.iter().map(|child| self.render(*child)).collect();
+                children.extend(inline::parse(
+                    &node.tokens,
+                    &self.link_ref_defs,
+                    &self.footnotes_defs,
+                    &self.footnotes_used,
+                    &self.options,
+                    inline::BlockKind::TableCell,
+                ));
                 let mut object = serde_json::Map::new();
                 object.insert("Type".into(), json!("NodeTableCell"));
                 for (key, value) in &node.attrs {
@@ -473,16 +475,21 @@ impl Parser {
                     out.push(':');
                     let _ = write!(out, "{}", value);
                 }
-                let mut children = String::new();
-                inline::parse_to_json(
+                // 单元格自己也可能有孩子（摘出来的 span IAL），先写它们再接行内内容
+                let mut children = String::from("[");
+                let mut first = true;
+                self.write_children_flat(index, &mut children, &mut first);
+                inline::parse_to_json_flat(
                     &node.tokens,
                     &self.link_ref_defs,
                     &self.footnotes_defs,
                     &self.footnotes_used,
                     &mut children,
+                    &mut first,
                     &self.options,
                     inline::BlockKind::TableCell,
                 );
+                children.push(']');
                 if children != "[]" {
                     out.push_str(",\"Children\":");
                     out.push_str(&children);
