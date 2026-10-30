@@ -134,14 +134,7 @@ pub fn parse_to_json(src: &str) -> String {
 
 /// 用指定配置解析，直接输出 JSON 文本。
 pub fn parse_to_json_with(src: &str, options: &Options) -> String {
-    let mut parser = Parser::new(options.clone());
-    let root = parser.add_root();
-    parser.tip = Some(root);
-    parser.parse_blocks(src);
-    // 段落形式的块级 IAL 要在行内解析前并到前一个块上
-    parser.merge_paragraph_ial();
-    // 脚注引用要先扫一遍，定义块的 FootnotesRefs 才是完整的
-    parser.index_footnotes();
+    let (parser, root) = parse_into(src, options);
     // 预留：Lute 风格的 JSON 一般是原文的 4-17 倍（列表/内联比纯文本膨胀得多）。
     // 取 8 倍折中，不够时 String 自己翻倍，总 memcpy 也就两倍最终大小。
     let mut out = String::with_capacity(src.len() * 8 + 256);
@@ -158,6 +151,15 @@ pub fn parse(src: &str) -> Value {
 
 /// 用指定配置解析，返回 NodeDocument。
 pub fn parse_with(src: &str, options: &Options) -> Value {
+    let (parser, root) = parse_into(src, options);
+    parser.render(root)
+}
+
+/// 块解析的公共入口：解析完只差最后一步渲染。
+///
+/// 任务列表项需要把剩余内容重新解析一遍（对应 Lute paragraphFinalize 里那次
+/// 递归 `parse`），所以得能拿到内部 Parser，而不能只拿渲染结果。
+fn parse_into(src: &str, options: &Options) -> (Parser, usize) {
     let mut parser = Parser::new(options.clone());
     let root = parser.add_root();
     parser.tip = Some(root);
@@ -166,7 +168,7 @@ pub fn parse_with(src: &str, options: &Options) -> Value {
     parser.merge_paragraph_ial();
     // 脚注引用要先扫一遍，定义块的 FootnotesRefs 才是完整的
     parser.index_footnotes();
-    parser.render(root)
+    (parser, root)
 }
 
 /// 对应 Lute 的 `lex.NewLexer` + `Lexer.NextLine` 对输入的预处理：
@@ -499,6 +501,26 @@ impl Parser {
         self.footnotes_defs = defs;
         self.footnotes_refs = std::cell::RefCell::new(refs);
         self.footnotes_used = std::cell::RefCell::new(vec![0usize; self.footnotes_defs.len()]);
+    }
+
+    /// 把另一个解析器里的子树整个复制过来，返回新节点下标。
+    ///
+    /// 任务列表项的剩余内容要重新解析，得到的是另一棵树；把它嫁接回来时
+    /// 节点下标全都得重映射，不能直接搬。
+    pub(super) fn graft(&mut self, sub: &Parser, index: usize) -> usize {
+        let copy = self.new_node(sub.nodes[index].node_type);
+        self.nodes[copy].tokens = sub.nodes[index].tokens.clone();
+        self.nodes[copy].attrs = sub.nodes[index].attrs.clone();
+        self.nodes[copy].list_data = sub.nodes[index].list_data.clone();
+        self.nodes[copy].close = sub.nodes[index].close;
+        self.nodes[copy].last_line_blank = sub.nodes[index].last_line_blank;
+        let children = sub.nodes[index].children.clone();
+        for child in children {
+            let child_copy = self.graft(sub, child);
+            self.nodes[child_copy].parent = Some(copy);
+            self.nodes[copy].children.push(child_copy);
+        }
+        copy
     }
 
     /// 按文档顺序列出所有节点（先序，兄弟按出现顺序）。

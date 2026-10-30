@@ -345,11 +345,14 @@ impl Parser {
                 .list_data
                 .as_ref()
                 .is_some_and(|list| lists_match(list, &data));
+        // 有序列表（含有序任务列表）才有递增序号，对应 Lute 的
+        // `1 == Typ || (3 == Typ && 0 == BulletChar)`。
+        let ordered = data.typ == 1 || (data.typ == 3 && data.bullet_char == 0);
         if self.tip != Some(container) || !matches_previous {
             let list = self.add_child("NodeList");
             // 列表自身的 ListData 保留首项的记号与起始序号
             let mut list_data = data.clone();
-            if list_data.typ == 1 {
+            if ordered {
                 list_data.num = data.start;
             }
             self.nodes[list].list_data = Some(Box::new(list_data));
@@ -357,7 +360,7 @@ impl Parser {
         let item = self.add_child("NodeListItem");
         // 有序列表的序号：首项用标记里的起始号，其余按前一项递增。
         let mut item_data = data.clone();
-        if item_data.typ == 1 {
+        if ordered {
             let mut number = data.start;
             if let Some(parent) = self.nodes[item].parent {
                 if let Some(position) = self.nodes[parent]
@@ -376,6 +379,20 @@ impl Parser {
             item_data.num = number;
         }
         self.nodes[item].list_data = Some(Box::new(item_data));
+        // Lute 里列表节点与首项共用同一份 ListData，序号修正会同时改到列表上。
+        // 只有首项才同步——后续项的序号各自独立，列表始终保留起始号。
+        if ordered {
+            if let Some(parent) = self.nodes[item].parent {
+                if self.nodes[parent].node_type == "NodeList"
+                    && self.nodes[parent].children.len() == 1
+                {
+                    let number = self.nodes[item].list_data.as_ref().map_or(0, |d| d.num);
+                    if let Some(list_data) = self.nodes[parent].list_data.as_mut() {
+                        list_data.num = number;
+                    }
+                }
+            }
+        }
         true
     }
 

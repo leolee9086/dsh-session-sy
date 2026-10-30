@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use super::util::{base64, trim_trailing_newline_spaces, trim_whitespace};
+use super::util::{base64, is_whitespace, trim_trailing_newline_spaces, trim_whitespace};
 use super::{inline, Parser};
 
 impl Parser {
@@ -141,6 +141,119 @@ impl Parser {
 
     /// 对应 paragraphFinalize：裁空白，摘出链接引用定义；段落空了就从父节点摘除。
     /// 返回 true 表示这一段已经变成表格，调用方不要再把 Tip 复位。
+    /// 对应 Lute paragraphFinalize 里的任务列表处理。
+    ///
+    /// 段落是任务列表项的首孩子时，把开头的 `[ ]` 摘成独立节点；如果剩余内容
+    /// 重新解析后不再是段落（引用、标题这类），就把列表项改造成
+    /// `[标记, 一个空格文本, 新块]` 的形状——Lute 就是这么处理
+    /// `- [ ] > [!NOTE]` 的。
+    fn split_task_list_marker(&mut self, block: usize) -> bool {
+        if !self.options.gfm_task_list_item {
+            return false;
+        }
+        let Some(parent) = self.nodes[block].parent else {
+            return false;
+        };
+        if self.nodes[parent].node_type != "NodeListItem" {
+            return false;
+        }
+        let Some(data) = self.nodes[parent].list_data.as_ref() else {
+            return false;
+        };
+        if data.typ != 3 {
+            return false;
+        }
+        if self.nodes[parent].children.first() != Some(&block) {
+            return false;
+        }
+        let tokens = self.nodes[block].tokens.clone();
+        // 至少要有三个标记字节加一个空白字符
+        if tokens.len() <= 3 {
+            return false;
+        }
+        if tokens[0] != b'[' || tokens[2] != b']' || tokens[1] == b']' {
+            return false;
+        }
+        if !is_whitespace(tokens[3]) {
+            return false;
+        }
+        let marker = tokens[1];
+        // 对应 IsValidTaskListItemMarker：开了任意标记就接受方括号以外的任意字符
+        let valid = matches!(marker, b' ' | b'x' | b'X')
+            || (self.options.arbitrary_task_list_item_marker
+                && marker != b'['
+                && marker != b']');
+        if !valid {
+            return false;
+        }
+        // 摘掉开头的 [ ]、[x] 或 [X]
+        self.nodes[block].tokens = tokens[3..].to_vec();
+
+        // 段落里先放上标记节点，对应 Lute 的 PrependChild
+        let marker_node = self.new_node("NodeTaskListItemMarker");
+        self.nodes[marker_node].tokens = vec![b'[', marker, b']'];
+        if marker != b' ' {
+            self.nodes[marker_node]
+                .attrs
+                .push(("TaskListItemChecked", json!(true)));
+        }
+        self.nodes[marker_node]
+            .attrs
+            .push(("TaskListItemMarker", json!(marker)));
+        self.nodes[block].children.insert(0, marker_node);
+        self.nodes[marker_node].parent = Some(block);
+
+        let rest = self.nodes[block].tokens.clone();
+        if rest.is_empty() {
+            return false;
+        }
+        let rest_text = String::from_utf8_lossy(&rest).to_string();
+        let (sub, sub_root) = super::parse_into(&rest_text, &self.options);
+        let sub_children = sub.nodes[sub_root].children.clone();
+        let Some(&first) = sub_children.first() else {
+            return false;
+        };
+        if sub.nodes[first].node_type == "NodeParagraph" {
+            return false;
+        }
+
+        // 1. 列表项最前面放一个空格文本
+        let space = self.new_node("NodeText");
+        self.nodes[space].tokens = b" ".to_vec();
+        self.nodes[parent].children.insert(0, space);
+        self.nodes[space].parent = Some(parent);
+        // 2. 段落已有的孩子（就是刚放的标记）挪到空格前面
+        let own = self.nodes[block].children.clone();
+        for (offset, child) in own.iter().enumerate() {
+            self.nodes[parent].children.insert(offset, *child);
+            self.nodes[*child].parent = Some(parent);
+        }
+        self.nodes[block].children.clear();
+        // 3. 新块接到段落后面，然后把段落自己摘掉
+        let Some(position) = self.nodes[parent]
+            .children
+            .iter()
+            .position(|child| *child == block)
+        else {
+            return true;
+        };
+        let mut insert_at = position + 1;
+        for child in sub_children {
+            let copy = self.graft(&sub, child);
+            self.nodes[parent].children.insert(insert_at, copy);
+            self.nodes[copy].parent = Some(parent);
+            insert_at += 1;
+        }
+        if let Some(position) = self.nodes[parent]
+            .children
+            .iter()
+            .position(|child| *child == block)
+        {
+            self.nodes[parent].children.remove(position);
+        }
+        true
+    }
+
     pub(super) fn paragraph_finalize(&mut self, block: usize) -> bool {
         let tokens = trim_whitespace(&self.nodes[block].tokens);
         self.nodes[block].tokens = tokens;
@@ -163,6 +276,11 @@ impl Parser {
                     }
                 }
             }
+        }
+
+        // 任务列表项：段落收尾时把开头的 [ ] 摘成独立节点
+        if self.split_task_list_marker(block) {
+            return false;
         }
 
         // Lute 在 paragraphFinalize 末尾尝试把段落解析成表格
