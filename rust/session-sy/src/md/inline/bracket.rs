@@ -12,6 +12,41 @@ impl<'a> Parser<'a> {
         self.append(node);
     }
 
+    /// 把 [^label] 组装成 NodeFootnotesRef。
+    ///
+    /// 对应 Lute parseCloseBracket 里的脚注分支：先把这个方括号开头的节点链整段
+    /// 丢掉（Lute 是逐个 Unlink），再生成引用节点，并在定义上累计引用次数。
+    fn build_footnotes_ref(&mut self, opener: Bracket, label: &[u8], index: usize) {
+        if let Some(open_index) = self.find_root(opener.node) {
+            self.root.truncate(open_index);
+        }
+        let node = self.new_node("NodeFootnotesRef");
+        self.nodes[node].data = label.to_vec();
+        // 同一个脚注被多次引用时，第二次起编号是 "序号:第几次"
+        let ref_id = {
+            let mut used = self.footnotes_used.borrow_mut();
+            match used.get_mut(index) {
+                Some(count) => {
+                    *count += 1;
+                    if *count == 1 {
+                        (index + 1).to_string()
+                    } else {
+                        format!("{}:{}", index + 1, count)
+                    }
+                }
+                None => (index + 1).to_string(),
+            }
+        };
+        self.nodes[node]
+            .attrs
+            .push(("FootnotesRefLabel", json!(base64(label))));
+        self.nodes[node]
+            .attrs
+            .push(("FootnotesRefId", json!(ref_id)));
+        self.root.push(node);
+        self.brackets.pop();
+    }
+
     fn add_bracket(&mut self, node: usize, index: usize, image: bool) {
         if let Some(last) = self.brackets.last_mut() {
             last.bracket_after = true;
@@ -183,6 +218,18 @@ impl<'a> Parser<'a> {
                 }
             }
             if let Some(label) = label {
+                // 脚注引用 [^label]：只要定义存在就走脚注，不再当链接引用查
+                if self.options.footnotes && label.starts_with(b"^") {
+                    if let Some(index) = self
+                        .footnotes
+                        .iter()
+                        .position(|(definition, _)| definition == &label)
+                    {
+                        self.pos = start_pos + consumed;
+                        self.build_footnotes_ref(opener, &label, index);
+                        return;
+                    }
+                }
                 let key = normalize_label(&label);
                 if let Some((value, title_value)) = self.defs.get(&key) {
                     dest = value.clone();

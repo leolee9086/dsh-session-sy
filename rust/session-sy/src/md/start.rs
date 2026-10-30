@@ -271,6 +271,48 @@ impl Parser {
         true
     }
 
+    /// 对应 FootnotesStart：行首 `[^label]:` 是脚注定义。
+    pub(super) fn footnotes_start(&mut self, _container: usize) -> bool {
+        if !self.options.footnotes || self.indented {
+            return false;
+        }
+        let line = self.current_line.clone();
+        let start = self.next_nonspace;
+        if line.get(start) != Some(&b'[') || line.get(start + 1) != Some(&b'^') {
+            return false;
+        }
+        // 标签从 ^ 开始，遇到空白说明不是脚注定义
+        let mut label = vec![b'^'];
+        let mut i = start + 2;
+        while i < line.len() {
+            let token = line[i];
+            if token == b' ' || token == b'\t' || token == b'\n' {
+                return false;
+            }
+            if token == b']' {
+                break;
+            }
+            label.push(token);
+            i += 1;
+        }
+        if i >= line.len() || line.get(i + 1) != Some(&b':') {
+            return false;
+        }
+        self.advance_offset(1, false);
+        self.close_unmatched_blocks();
+        // 跳过 [ 与 "^label]:"，对应 Lute 的 advanceOffset(len(label)+2, true)
+        self.advance_offset(label.len() + 2, true);
+        let need_block = self
+            .tip
+            .map_or(true, |tip| self.nodes[tip].node_type != "NodeFootnotesDefBlock");
+        if need_block {
+            self.add_child("NodeFootnotesDefBlock");
+        }
+        let def = self.add_child("NodeFootnotesDef");
+        self.nodes[def].tokens = label;
+        true
+    }
+
     pub(super) fn indent_code_block_start(&mut self, _container: usize) -> bool {
         if self.indent < 4 || self.blank {
             return false;

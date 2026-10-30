@@ -17,9 +17,57 @@ impl Parser {
         let node = &self.nodes[index];
         match node.node_type {
             "NodeDocument" => {
-                let children: Vec<Value> =
-                    node.children.iter().map(|child| self.render(*child)).collect();
-                json!({"Type": "NodeDocument", "Children": children})
+                let mut object = serde_json::Map::new();
+                object.insert("Type".into(), json!("NodeDocument"));
+                // 空文档不输出 Children（Go 的 omitempty）
+                if !node.children.is_empty() {
+                    let children: Vec<Value> =
+                        node.children.iter().map(|child| self.render(*child)).collect();
+                    object.insert("Children".into(), Value::Array(children));
+                }
+                Value::Object(object)
+            }
+            "NodeFootnotesDef" => {
+                // 脚注定义：Data 是标签（^bar），FootnotesRefs 是引用列表
+                let mut object = serde_json::Map::new();
+                object.insert("Type".into(), json!("NodeFootnotesDef"));
+                object.insert(
+                    "Data".into(),
+                    json!(String::from_utf8_lossy(&node.tokens)),
+                );
+                if let Some(position) = self
+                    .footnotes_defs
+                    .iter()
+                    .position(|(_, at)| *at == index)
+                {
+                    let refs = self.footnotes_refs.borrow();
+                    if let Some(labels) = refs.get(position) {
+                        if !labels.is_empty() {
+                            let mut list = Vec::new();
+                            for (order, label) in labels.iter().enumerate() {
+                                // 第一次是序号，之后是 "序号:第几次"
+                                let ref_id = if order == 0 {
+                                    (position + 1).to_string()
+                                } else {
+                                    format!("{}:{}", position + 1, order + 1)
+                                };
+                                // Lute 没给这些元素设类型，所以 Type 是空字符串
+                                list.push(json!({
+                                    "Type": "",
+                                    "FootnotesRefLabel": base64(label),
+                                    "FootnotesRefId": ref_id,
+                                }));
+                            }
+                            object.insert("FootnotesRefs".into(), Value::Array(list));
+                        }
+                    }
+                }
+                if !node.children.is_empty() {
+                    let children: Vec<Value> =
+                        node.children.iter().map(|child| self.render(*child)).collect();
+                    object.insert("Children".into(), Value::Array(children));
+                }
+                Value::Object(object)
             }
             "NodeParagraph" => {
                 let text = trim_trailing_blank(&node.tokens);
@@ -30,6 +78,8 @@ impl Parser {
                     inline::parse(
                         body,
                         &self.link_ref_defs,
+                        &self.footnotes_defs,
+                        &self.footnotes_used,
                         &self.options,
                         inline::BlockKind::Paragraph,
                     );
@@ -51,6 +101,8 @@ impl Parser {
                     inline::parse(
                         &node.tokens,
                         &self.link_ref_defs,
+                        &self.footnotes_defs,
+                        &self.footnotes_used,
                         &self.options,
                         inline::BlockKind::TableCell,
                     );
@@ -74,6 +126,8 @@ impl Parser {
                 children.extend(inline::parse(
                     &text,
                     &self.link_ref_defs,
+                    &self.footnotes_defs,
+                    &self.footnotes_used,
                     &self.options,
                     inline::BlockKind::Heading,
                 ));
@@ -382,10 +436,57 @@ impl Parser {
         let node = &self.nodes[index];
         match node.node_type {
             "NodeDocument" => {
-                out.push_str("{\"Type\":\"NodeDocument\",\"Children\":[");
-                let mut first = true;
-                self.write_children_flat(index, out, &mut first);
-                out.push_str("]}");
+                out.push_str("{\"Type\":\"NodeDocument\"");
+                // 空文档不输出 Children（Go 的 omitempty）
+                if !node.children.is_empty() {
+                    out.push_str(",\"Children\":[");
+                    let mut first = true;
+                    self.write_children_flat(index, out, &mut first);
+                    out.push(']');
+                }
+                out.push('}');
+            }
+            "NodeFootnotesDef" => {
+                // 脚注定义：Data 是标签，FootnotesRefs 是引用列表
+                out.push_str("{\"Type\":\"NodeFootnotesDef\",\"Data\":");
+                write_json_string(out, &String::from_utf8_lossy(&node.tokens));
+                if let Some(position) = self
+                    .footnotes_defs
+                    .iter()
+                    .position(|(_, at)| *at == index)
+                {
+                    let refs = self.footnotes_refs.borrow();
+                    if let Some(labels) = refs.get(position) {
+                        if !labels.is_empty() {
+                            out.push_str(",\"FootnotesRefs\":[");
+                            for (order, label) in labels.iter().enumerate() {
+                                if order > 0 {
+                                    out.push(',');
+                                }
+                                // 第一次是序号，之后是 "序号:第几次"
+                                let ref_id = if order == 0 {
+                                    (position + 1).to_string()
+                                } else {
+                                    format!("{}:{}", position + 1, order + 1)
+                                };
+                                // Lute 没给这些元素设类型，所以 Type 是空字符串
+                                out.push_str("{\"Type\":\"\",\"FootnotesRefLabel\":");
+                                write_json_string(out, &base64(label));
+                                out.push_str(",\"FootnotesRefId\":");
+                                write_json_string(out, &ref_id);
+                                out.push('}');
+                            }
+                            out.push(']');
+                        }
+                    }
+                }
+                if !node.children.is_empty() {
+                    out.push_str(",\"Children\":[");
+                    let mut first = true;
+                    self.write_children_flat(index, out, &mut first);
+                    out.push(']');
+                }
+                out.push('}');
             }
             "NodeParagraph" => {
                 let text = trim_trailing_blank_ref(&node.tokens);
@@ -409,6 +510,8 @@ impl Parser {
                 inline::parse_to_json_flat(
                     body,
                     &self.link_ref_defs,
+                    &self.footnotes_defs,
+                    &self.footnotes_used,
                     out,
                     &mut first,
                     &self.options,
@@ -429,6 +532,8 @@ impl Parser {
                 inline::parse_to_json(
                     &node.tokens,
                     &self.link_ref_defs,
+                    &self.footnotes_defs,
+                    &self.footnotes_used,
                     &mut children,
                     &self.options,
                     inline::BlockKind::TableCell,
@@ -460,6 +565,8 @@ impl Parser {
                 inline::parse_to_json_flat(
                     &text,
                     &self.link_ref_defs,
+                    &self.footnotes_defs,
+                    &self.footnotes_used,
                     out,
                     &mut first,
                     &self.options,

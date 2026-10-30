@@ -78,12 +78,18 @@ struct Parser<'a> {
     top: Option<usize>,
     brackets: Vec<Bracket>,
     defs: &'a std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
+    /// 脚注定义（标签 → 定义下标），识别 [^label] 用。
+    footnotes: &'a [(Vec<u8>, usize)],
+    /// 每个脚注定义已用次数，跨段落共享，用来算 FootnotesRefId。
+    footnotes_used: &'a std::cell::RefCell<Vec<usize>>,
 }
 
 /// 解析一段块级 tokens 的行内内容。
 pub fn parse(
     tokens: &[u8],
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
+    footnotes: &[(Vec<u8>, usize)],
+    footnotes_used: &std::cell::RefCell<Vec<usize>>,
     options: &Options,
     kind: BlockKind,
 ) -> Vec<Value> {
@@ -98,6 +104,8 @@ pub fn parse(
         top: None,
         brackets: Vec::new(),
         defs,
+        footnotes,
+        footnotes_used,
     };
     parser.run();
     if options.gfm_auto_link {
@@ -115,6 +123,8 @@ pub fn parse(
 pub fn parse_to_json(
     tokens: &[u8],
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
+    footnotes: &[(Vec<u8>, usize)],
+    footnotes_used: &std::cell::RefCell<Vec<usize>>,
     out: &mut String,
     options: &Options,
     kind: BlockKind,
@@ -130,6 +140,8 @@ pub fn parse_to_json(
         top: None,
         brackets: Vec::new(),
         defs,
+        footnotes,
+        footnotes_used,
     };
     parser.run();
     if options.gfm_auto_link {
@@ -145,6 +157,8 @@ pub fn parse_to_json(
 pub fn parse_to_json_flat(
     tokens: &[u8],
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
+    footnotes: &[(Vec<u8>, usize)],
+    footnotes_used: &std::cell::RefCell<Vec<usize>>,
     out: &mut String,
     first: &mut bool,
     options: &Options,
@@ -161,6 +175,8 @@ pub fn parse_to_json_flat(
         top: None,
         brackets: Vec::new(),
         defs,
+        footnotes,
+        footnotes_used,
     };
     parser.run();
     if options.gfm_auto_link {

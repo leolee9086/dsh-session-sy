@@ -77,6 +77,50 @@ struct Parser {
 
     /// 引擎配置，决定哪些语法被启用。对应 Lute 的 ParseOption。
     options: Options,
+
+    /// 脚注定义：标签（如 `^bar`）→ 定义节点下标。块解析完填充一次。
+    footnotes_defs: Vec<(Vec<u8>, usize)>,
+    /// 每个脚注定义被引用的标签列表（文档顺序），渲染定义块时据此输出 FootnotesRefs。
+    ///
+    /// 用 RefCell 是因为渲染是 &self，而行内解析在里面还要回写引用次数。
+    footnotes_refs: std::cell::RefCell<Vec<Vec<Vec<u8>>>>,
+    /// 每个脚注定义当前已经被解析出几次引用，用来算 FootnotesRefId。
+    footnotes_used: std::cell::RefCell<Vec<usize>>,
+}
+
+/// 扫描行内文本里的脚注引用 `[^label]`，按出现顺序返回标签（含 `^`）。
+///
+/// 只做 token 级识别，足够给定义块算出 FootnotesRefs 的数量；
+/// 真正的节点是在行内解析时按同样的顺序生成的。
+fn scan_footnote_refs(tokens: &[u8]) -> Vec<Vec<u8>> {
+    let mut refs = Vec::new();
+    let mut i = 0usize;
+    while i + 2 < tokens.len() {
+        if tokens[i] == b'[' && tokens[i + 1] == b'^' {
+            let mut label = vec![b'^'];
+            let mut j = i + 2;
+            let mut valid = true;
+            while j < tokens.len() {
+                let token = tokens[j];
+                if token == b' ' || token == b'\t' || token == b'\n' {
+                    valid = false;
+                    break;
+                }
+                if token == b']' {
+                    break;
+                }
+                label.push(token);
+                j += 1;
+            }
+            if valid && j < tokens.len() && tokens[j] == b']' {
+                refs.push(label);
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    refs
 }
 
 /// 解析 markdown，直接输出 Lute 风格的 JSON 文本。
@@ -96,6 +140,8 @@ pub fn parse_to_json_with(src: &str, options: &Options) -> String {
     parser.parse_blocks(src);
     // 段落形式的块级 IAL 要在行内解析前并到前一个块上
     parser.merge_paragraph_ial();
+    // 脚注引用要先扫一遍，定义块的 FootnotesRefs 才是完整的
+    parser.index_footnotes();
     // 预留：Lute 风格的 JSON 一般是原文的 4-17 倍（列表/内联比纯文本膨胀得多）。
     // 取 8 倍折中，不够时 String 自己翻倍，总 memcpy 也就两倍最终大小。
     let mut out = String::with_capacity(src.len() * 8 + 256);
@@ -118,6 +164,8 @@ pub fn parse_with(src: &str, options: &Options) -> Value {
     parser.parse_blocks(src);
     // 段落形式的块级 IAL 要在行内解析前并到前一个块上
     parser.merge_paragraph_ial();
+    // 脚注引用要先扫一遍，定义块的 FootnotesRefs 才是完整的
+    parser.index_footnotes();
     parser.render(root)
 }
 
@@ -172,6 +220,9 @@ impl Parser {
             partially_consumed_tab: false,
             all_closed: false,
             options,
+            footnotes_defs: Vec::new(),
+            footnotes_refs: std::cell::RefCell::new(Vec::new()),
+            footnotes_used: std::cell::RefCell::new(Vec::new()),
         }
     }
 
@@ -311,6 +362,26 @@ impl Parser {
             }
             if self.accepts_lines(container) {
                 self.add_line();
+                // 数学块的单行形式 $$foo$$ 也要在本行加入之后判断闭合
+                if self.nodes[container].node_type == "NodeMathBlock" {
+                    let tokens = self.nodes[container].tokens.clone();
+                    if tokens.len() >= 3 {
+                        let first = tokens.windows(2).position(|window| window == b"$$");
+                        let last = tokens.windows(2).rposition(|window| window == b"$$");
+                        if let (Some(first), Some(last)) = (first, last) {
+                            // 首尾标记不同，且尾巴去掉空白后只剩 $$，说明这一行就闭合了
+                            if last != first {
+                                let tails = &tokens[last..];
+                                if tails.starts_with(b"$$")
+                                    && tails.ends_with(b"\n")
+                                    && util::trim_whitespace(tails) == b"$$"
+                                {
+                                    self.finalize(container);
+                                }
+                            }
+                        }
+                    }
+                }
                 // HTML 块 1-5 型靠行内闭合标记结束，必须在本行加入之后判断。
                 if self.nodes[container].node_type == "NodeHTMLBlock" {
                     let html_type = self.attr_u64(container, "HtmlBlockType").unwrap_or(0);
@@ -380,6 +451,9 @@ impl Parser {
         if self.indent_code_block_start(container) {
             return Some((self.tip?, true));
         }
+        if self.footnotes_start(container) {
+            return Some((self.tip?, false));
+        }
         None
     }
 
@@ -387,6 +461,59 @@ impl Parser {
     /// 合并到前一个兄弟块，然后自身消失。
     ///
     /// 注意 Lute 这一处**不检查** `KramdownBlockIAL` 开关，所以 default 配置下也生效。
+    /// 收集脚注定义，并按文档顺序预扫引用。
+    ///
+    /// 行内解析发生在渲染阶段，而脚注定义块可能排在引用之前，
+    /// 所以要先把引用次数扫出来，定义块的 FootnotesRefs 才能是完整的。
+    fn index_footnotes(&mut self) {
+        self.footnotes_defs.clear();
+        self.footnotes_refs.borrow_mut().clear();
+        if !self.options.footnotes {
+            return;
+        }
+        // 按文档顺序收集所有定义
+        let mut defs: Vec<(Vec<u8>, usize)> = Vec::new();
+        for node in self.document_order() {
+            if self.nodes[node].node_type == "NodeFootnotesDef" {
+                defs.push((self.nodes[node].tokens.clone(), node));
+            }
+        }
+        if defs.is_empty() {
+            return;
+        }
+        // 再按文档顺序扫引用
+        let mut refs: Vec<Vec<Vec<u8>>> = vec![Vec::new(); defs.len()];
+        for node in self.document_order() {
+            if !matches!(
+                self.nodes[node].node_type,
+                "NodeParagraph" | "NodeHeading" | "NodeTableCell"
+            ) {
+                continue;
+            }
+            for label in scan_footnote_refs(&self.nodes[node].tokens) {
+                if let Some(index) = defs.iter().position(|(def, _)| def == &label) {
+                    refs[index].push(label);
+                }
+            }
+        }
+        self.footnotes_defs = defs;
+        self.footnotes_refs = std::cell::RefCell::new(refs);
+        self.footnotes_used = std::cell::RefCell::new(vec![0usize; self.footnotes_defs.len()]);
+    }
+
+    /// 按文档顺序列出所有节点（先序，兄弟按出现顺序）。
+    fn document_order(&self) -> Vec<usize> {
+        let mut order = Vec::new();
+        let mut stack = vec![0usize];
+        while let Some(node) = stack.pop() {
+            order.push(node);
+            for child in self.nodes[node].children.iter().rev() {
+                stack.push(*child);
+            }
+        }
+        order
+    }
+
     fn merge_paragraph_ial(&mut self) {
         self.merge_paragraph_ial_in(0);
     }
@@ -506,6 +633,12 @@ impl Parser {
                 !matches!(node_type, "NodeListItem" | "NodeBlockquoteMarker")
             }
             "NodeList" => node_type == "NodeListItem",
+            // 脚注定义块只装脚注定义，脚注定义自己是个容器，能装任意块
+            "NodeFootnotesDefBlock" => node_type == "NodeFootnotesDef",
+            "NodeFootnotesDef" => !matches!(
+                node_type,
+                "NodeListItem" | "NodeBlockquoteMarker" | "NodeFootnotesDef"
+            ),
             _ => false,
         }
     }

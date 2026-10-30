@@ -21,6 +21,17 @@ impl Parser {
             "NodeHTMLBlock" => self.html_block_continue(node),
             "NodeBlockquote" => self.blockquote_continue(node),
             "NodeListItem" => self.list_item_continue(node),
+            "NodeFootnotesDef" => {
+                // 对应 FootnotesContinue：空行继续，缩进不足 4 就结束
+                if self.blank {
+                    0
+                } else if self.indent < 4 {
+                    1
+                } else {
+                    self.advance_offset(4, true);
+                    0
+                }
+            }
             "NodeHeading" | "NodeThematicBreak" => 1,
             "NodeYamlFrontMatter" => {
                 if self.yaml_front_matter_close() {
