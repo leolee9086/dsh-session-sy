@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Agent session 序列 <-> 思源 .sy 文档的双向转换；Rust 单实现，DSH 是第一个适配器",
   "scripts": {
-    "build": "cargo build --release --manifest-path rust/verify/Cargo.toml",
-    "test": "cargo test --release --manifest-path rust/verify/Cargo.toml"
+    "build": "cargo build --release --manifest-path rust/session-sy/Cargo.toml",
+    "test": "cargo test --release --manifest-path rust/session-sy/Cargo.toml"
   }
 }

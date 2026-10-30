@@ -95,7 +95,7 @@ session-sy parse <markdown>
 ## 目录
 
 ```
-rust/verify/                 唯一实现
+rust/session-sy/             唯一实现
   src/lib.rs                 库入口
   src/md.rs                  块级解析入口（405 行）
   src/md/start.rs            各类块的 Start 判定
