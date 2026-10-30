@@ -18,13 +18,20 @@ fn accept_tokens(remains: &[u8], tag: &[u8]) -> Option<usize> {
 /// 注意它返回的是**标签长度**，不是命中的位置——Lute 随后拿这个长度去索引
 /// 原 tokens 判断边界，所以这里必须照抄，不能改成返回位置。
 fn accept_tokenss(tokens: &[u8], tags: &[&[u8]]) -> Option<usize> {
-    for i in 0..tokens.len() {
+    let mut i = 0usize;
+    while i < tokens.len() {
+        // 所有标签都以 < 开头，先跳掉其它字节，不用对每个位置试一遍标签表
+        if tokens[i] != b'<' {
+            i += 1;
+            continue;
+        }
         let remains = &tokens[i..];
         for tag in tags {
             if let Some(len) = accept_tokens(remains, tag) {
                 return Some(len);
             }
         }
+        i += 1;
     }
     None
 }
