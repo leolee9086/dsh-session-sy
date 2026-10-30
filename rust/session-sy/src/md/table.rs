@@ -391,7 +391,9 @@ impl Parser {
             self.append_child(target, row);
         }
 
-        // 整段变表时 Tokens 原样保留（渲染成 Data）；有前置内容时各自留各自的
+        // 整段变表时 Tokens 原样保留（渲染成 Data）；有前置内容时各自留各自的。
+        // 例外是 setext 那条路，它走完会自己清掉（对应 Lute SetextHeadingStart 里的
+        // container.Tokens = nil）。
         if offset != 0 {
             self.nodes[block].tokens = tokens[..offset].to_vec();
             self.nodes[target].tokens = tokens[start..].to_vec();

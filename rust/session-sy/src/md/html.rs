@@ -301,7 +301,8 @@ impl Parser {
 
     /// 对应 SetextHeadingStart：段落后面跟 === 或 --- 就升级成标题。
     pub(super) fn setext_heading_start(&mut self, container: usize) -> bool {
-        if self.indented || self.nodes[container].node_type != "NodeParagraph" {
+        if self.indented || self.nodes[container].node_type != "NodeParagraph" || !self.options.setext
+        {
             return false;
         }
         let line = trim_whitespace(&self.current_line);
@@ -316,6 +317,19 @@ impl Parser {
             return false;
         }
         let level = if first == b'=' { 1 } else { 2 };
+
+        // Lute 在把段落升级成标题之前，先试着把它解析成表格。
+        // 「0\n-:\n1\n-」这种，前两行本身就能构成一个单列表格，
+        // 「| foo |\n| :-: |\n| bar |\n=======」也是表格优先。
+        // 成功就返回 false——当前这行没被消费，交给后面的列表等分支处理。
+        if self.options.gfm_table && self.try_parse_table(container) {
+            // 对应 Lute SetextHeadingStart 里的 container.Tokens = nil：
+            // 走这条路变成的表不带 Data。
+            let table = self.tip.unwrap_or(container);
+            self.nodes[table].tokens.clear();
+            return false;
+        }
+
         self.close_unmatched_blocks();
         // 段落开头的链接引用定义先摘走，剩下的才是标题内容
         let defs = self.extract_link_ref_defs(container);
