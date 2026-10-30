@@ -6,6 +6,29 @@ use super::util::{base64, trim_trailing_newline_spaces, trim_whitespace};
 use super::{inline, Parser};
 
 impl Parser {
+/// 对应 yamlFrontMatterFinalize：剔除首尾的 ---，内容进三个子节点。
+    pub(super) fn yaml_front_matter_finalize(&mut self, node: usize) {
+        let tokens = self.nodes[node].tokens.clone();
+        // 开头是 "---\n"，占 4 个字节；这里按 Lute 的 tokens[3:] 处理
+        let mut body: Vec<u8> = if tokens.len() >= 3 {
+            tokens[3..].to_vec()
+        } else {
+            Vec::new()
+        };
+        body = trim_whitespace(&body);
+        if body.ends_with(b"---") {
+            body.truncate(body.len() - 3);
+        }
+        self.nodes[node].tokens = body.clone();
+        let open = self.new_node("NodeYamlFrontMatterOpenMarker");
+        let content = self.new_node("NodeYamlFrontMatterContent");
+        self.nodes[content].tokens = body;
+        let close = self.new_node("NodeYamlFrontMatterCloseMarker");
+        self.append_child(node, open);
+        self.append_child(node, content);
+        self.append_child(node, close);
+    }
+
     /// 对应 Lute 的 codeBlockFinalize：围栏块丢掉首行，缩进块裁掉尾部空行。
     pub(super) fn code_block_finalize(&mut self, block: usize) {
         let fenced = self.nodes[block]
@@ -90,30 +113,36 @@ impl Parser {
     }
 
     /// 对应 paragraphFinalize：裁空白，摘出链接引用定义；段落空了就从父节点摘除。
-    pub(super) fn paragraph_finalize(&mut self, block: usize) {
+    /// 返回 true 表示这一段已经变成表格，调用方不要再把 Tip 复位。
+    pub(super) fn paragraph_finalize(&mut self, block: usize) -> bool {
         let tokens = trim_whitespace(&self.nodes[block].tokens);
         self.nodes[block].tokens = tokens;
         let defs = self.extract_link_ref_defs(block);
-        if defs.is_empty() {
-            return;
-        }
-        let remaining_blank = self.nodes[block]
-            .tokens
-            .iter()
-            .all(|byte| byte.is_ascii_whitespace());
-        let parent = self.nodes[block].parent;
-        self.append_def_block(defs, parent);
-        if remaining_blank {
-            if let Some(parent) = self.nodes[block].parent {
-                if let Some(position) = self.nodes[parent]
-                    .children
-                    .iter()
-                    .position(|child| *child == block)
-                {
-                    self.nodes[parent].children.remove(position);
+        if !defs.is_empty() {
+            let remaining_blank = self.nodes[block]
+                .tokens
+                .iter()
+                .all(|byte| byte.is_ascii_whitespace());
+            let parent = self.nodes[block].parent;
+            self.append_def_block(defs, parent);
+            if remaining_blank {
+                if let Some(parent) = self.nodes[block].parent {
+                    if let Some(position) = self.nodes[parent]
+                        .children
+                        .iter()
+                        .position(|child| *child == block)
+                    {
+                        self.nodes[parent].children.remove(position);
+                    }
                 }
             }
         }
+
+        // Lute 在 paragraphFinalize 末尾尝试把段落解析成表格
+        if self.options.gfm_table && self.try_parse_table(block) {
+            return true;
+        }
+        false
     }
 
     /// 对应 Lute 的 listFinalize：项之间出现空行即松散的，并把结果同步给首项。

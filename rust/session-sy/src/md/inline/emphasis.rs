@@ -118,6 +118,13 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let opener = opener.unwrap();
+            // Lute：波浪号两侧的标记数量必须一致才能配对（~x~~ 不算）
+            if self.delims[current].typ == b'~'
+                && self.delims[opener].num != self.delims[current].num
+            {
+                closer = self.delims[current].next;
+                continue;
+            }
             let use_delims = if self.delims[current].num >= 2 && self.delims[opener].num >= 2 {
                 2
             } else {
@@ -145,6 +152,16 @@ impl<'a> Parser<'a> {
                 (b'_', 1) => ("NodeEmphasis", "NodeEmU8eOpenMarker", "NodeEmU8eCloseMarker"),
                 (b'*', _) => ("NodeStrong", "NodeStrongA6kOpenMarker", "NodeStrongA6kCloseMarker"),
                 (b'_', _) => ("NodeStrong", "NodeStrongU8eOpenMarker", "NodeStrongU8eCloseMarker"),
+                (b'~', 1) if self.options.gfm_strikethrough && self.options.gfm_strikethrough1 => (
+                    "NodeStrikethrough",
+                    "NodeStrikethrough1OpenMarker",
+                    "NodeStrikethrough1CloseMarker",
+                ),
+                (b'~', _) if self.options.gfm_strikethrough => (
+                    "NodeStrikethrough",
+                    "NodeStrikethrough2OpenMarker",
+                    "NodeStrikethrough2CloseMarker",
+                ),
                 _ => {
                     closer = self.delims[current].next;
                     continue;

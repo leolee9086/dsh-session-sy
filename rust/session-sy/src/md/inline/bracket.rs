@@ -80,14 +80,20 @@ impl<'a> Parser<'a> {
             let paren_pos = self.pos;
             // Lute 一进入内联分支就记下 openParen，失败时也保留
             open_paren_data = Some(b"(".to_vec());
-            if let Some((passed_len, value)) = parse_inline_link_dest(&self.tokens[paren_pos..]) {
+            if let Some((passed_len, remains_offset, value)) =
+                parse_inline_link_dest(&self.tokens[paren_pos..])
+            {
                 let after = paren_pos + passed_len;
+                let remains_start = paren_pos + remains_offset;
                 let ends_with_paren =
                     passed_len > 1 && self.tokens.get(after.wrapping_sub(1)).copied() == Some(b')');
                 if ends_with_paren {
-                    let okay = if after < self.tokens.len() {
-                        !is_whitespace(self.tokens[after])
-                            && self.tokens.get(after + 1).copied() != Some(b'"')
+                    // 对应 Lute 的 `matched && 1 < len(remains)`：
+                    // 用 remains[0] 和 remains[1] 判断后面跟的是什么。
+                    // 注意 remains 起点可能与 passed 末尾重叠一个 `)`，不能混用。
+                    let okay = if remains_start + 1 < self.tokens.len() {
+                        !is_whitespace(self.tokens[remains_start])
+                            && self.tokens.get(remains_start + 1).copied() != Some(b'"')
                     } else {
                         true
                     };

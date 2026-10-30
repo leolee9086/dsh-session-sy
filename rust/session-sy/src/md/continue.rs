@@ -21,6 +21,14 @@ impl Parser {
             "NodeBlockquote" => self.blockquote_continue(node),
             "NodeListItem" => self.list_item_continue(node),
             "NodeHeading" | "NodeThematicBreak" => 1,
+            "NodeYamlFrontMatter" => {
+                if self.yaml_front_matter_close() {
+                    self.finalize(node);
+                    2
+                } else {
+                    0
+                }
+            }
             _ => 0,
         }
     }

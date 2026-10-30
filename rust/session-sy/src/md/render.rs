@@ -23,8 +23,23 @@ impl Parser {
             }
             "NodeParagraph" => {
                 let text = trim_trailing_blank(&node.tokens);
-                let children = inline::parse(&text, &self.link_ref_defs);
+                let children =
+                    inline::parse(&text, &self.link_ref_defs, &self.options, false);
                 json!({"Type": "NodeParagraph", "Children": children})
+            }
+            "NodeTableCell" => {
+                // 单元格和段落一样走行内解析；空单元格不写 Children
+                let children =
+                    inline::parse(&node.tokens, &self.link_ref_defs, &self.options, false);
+                let mut object = serde_json::Map::new();
+                object.insert("Type".into(), json!("NodeTableCell"));
+                for (key, value) in &node.attrs {
+                    object.insert((*key).to_string(), value.clone());
+                }
+                if !children.is_empty() {
+                    object.insert("Children".into(), Value::Array(children));
+                }
+                Value::Object(object)
             }
             "NodeHeading" => {
                 let level = self.attr_u64(index, "HeadingLevel").unwrap_or(1);
@@ -33,7 +48,7 @@ impl Parser {
                 for child in &node.children {
                     children.push(self.render(*child));
                 }
-                children.extend(inline::parse(&text, &self.link_ref_defs));
+                children.extend(inline::parse(&text, &self.link_ref_defs, &self.options, true));
                 let mut object = serde_json::Map::new();
                 object.insert("Type".into(), json!("NodeHeading"));
                 object.insert("HeadingLevel".into(), json!(level));
@@ -268,7 +283,30 @@ impl Parser {
             "NodeParagraph" => {
                 let text = trim_trailing_blank_ref(&node.tokens);
                 out.push_str("{\"Type\":\"NodeParagraph\",\"Children\":");
-                inline::parse_to_json(&text, &self.link_ref_defs, out);
+                inline::parse_to_json(&text, &self.link_ref_defs, out, &self.options, false);
+                out.push('}');
+            }
+            "NodeTableCell" => {
+                // 直出路径的单元格：先把行内内容写进临时串，再决定要不要 Children
+                out.push_str("{\"Type\":\"NodeTableCell\"");
+                for (key, value) in &node.attrs {
+                    out.push(',');
+                    write_json_string(out, key);
+                    out.push(':');
+                    let _ = write!(out, "{}", value);
+                }
+                let mut children = String::new();
+                inline::parse_to_json(
+                    &node.tokens,
+                    &self.link_ref_defs,
+                    &mut children,
+                    &self.options,
+                    false,
+                );
+                if children != "[]" {
+                    out.push_str(",\"Children\":");
+                    out.push_str(&children);
+                }
                 out.push('}');
             }
             "NodeHeading" => {
@@ -289,7 +327,14 @@ impl Parser {
                 let mut first = true;
                 self.write_children_flat(index, out, &mut first);
                 // 标题的行内节点是平铺进 Children 的，不是嵌套数组
-                inline::parse_to_json_flat(&text, &self.link_ref_defs, out, &mut first);
+                inline::parse_to_json_flat(
+                    &text,
+                    &self.link_ref_defs,
+                    out,
+                    &mut first,
+                    &self.options,
+                    true,
+                );
                 out.push_str("]}");
             }
             "NodeThematicBreak" => out.push_str("{\"Type\":\"NodeThematicBreak\"}"),

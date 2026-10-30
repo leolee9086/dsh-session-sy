@@ -74,6 +74,48 @@ impl<'a> Parser<'a> {
         self.append(node);
     }
 
+/// 对应 `parseHeadingID`：标题末尾的 `{id}`。
+    pub(super) fn parse_heading_id(&mut self) {
+        if !self.options.heading_id || !self.is_heading || self.tokens.len() < 3 {
+            self.pos += 1;
+            self.push_text(vec![b'{']);
+            return;
+        }
+        let start_pos = self.pos;
+        let content = &self.tokens[start_pos..];
+        let close = match content.iter().position(|&b| b == b'}') {
+            Some(value) => value,
+            None => {
+                self.pos += 1;
+                self.push_text(vec![b'{']);
+                return;
+            }
+        };
+        if close < 2 {
+            self.pos += 1;
+            self.push_text(vec![b'{']);
+            return;
+        }
+        let open = match content.iter().position(|&b| b == b'{') {
+            Some(value) => value,
+            None => return,
+        };
+        // 注意：Lute 在这里只在 Vditor 插入符场景下才放弃，普通情况即使 } 不在行尾
+        // 也会继续把 {id} 认作标题 ID，所以这里不额外拦截。
+        let id = content[open + 1..close].to_vec();
+        self.pos += close + 1;
+        // 裁掉标题正文尾部的空格
+        if let Some(&last) = self.root.last() {
+            if self.nodes[last].node_type == "NodeText" {
+                let trimmed = trim_right(&self.nodes[last].data);
+                self.nodes[last].data = trimmed;
+            }
+        }
+        let node = self.new_node("NodeHeadingID");
+        self.nodes[node].data = id;
+        self.append(node);
+    }
+
     /// 对应 parseCodeSpan：反引号数量必须成对，首尾各去掉一个空格。
     pub(super) fn parse_code_span(&mut self) {
         let start = self.pos;

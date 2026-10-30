@@ -63,24 +63,72 @@ pub(crate) fn unescape_backslashes(tokens: &[u8]) -> Vec<u8> {
 }
 
 /// 对应 html.EncodeDestination：把链接目标里不能直接出现的字符做百分号编码。
+///
+/// 保留字符白名单照抄 Lute（源自 mdurl）：`!#$&'()*+,-./0123456789:;=?@A-Z_a-z~`。
+/// `%` 单独处理：后面跟两位十六进制就大写化保留，否则编码成 `%25`。
 pub(super) fn encode_destination(tokens: &[u8]) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::new();
-    for byte in tokens {
-        match *byte {
-            b' ' | b'"' | b'<' | b'>' | b'\x60' | b'\\' | b'[' | b']' => {
-                out.push(b'%');
-                out.push(hex_digit(byte >> 4));
-                out.push(hex_digit(byte & 0x0f));
+    const SAFE: &[u8] =
+        b"!#$&'()*+,-./0123456789:;=?@ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz~";
+    let mut out: Vec<u8> = Vec::with_capacity(tokens.len() + 16);
+    let mut i = 0usize;
+    while i < tokens.len() {
+        let byte = tokens[i];
+        if byte >= 0x80 {
+            // 非 ASCII 按 UTF-8 的每个字节编码
+            let len = utf8_len(byte);
+            let end = (i + len).min(tokens.len());
+            for item in &tokens[i..end] {
+                push_percent(&mut out, *item);
             }
-            byte if byte >= 0x80 => {
-                out.push(b'%');
-                out.push(hex_digit(byte >> 4));
-                out.push(hex_digit(byte & 0x0f));
-            }
-            _ => out.push(*byte),
+            i = end;
+            continue;
         }
+        if byte == b'%' {
+            if i + 2 < tokens.len()
+                && tokens[i + 1].is_ascii_hexdigit()
+                && tokens[i + 2].is_ascii_hexdigit()
+            {
+                out.push(b'%');
+                out.push(tokens[i + 1].to_ascii_uppercase());
+                out.push(tokens[i + 2].to_ascii_uppercase());
+                i += 3;
+                continue;
+            }
+            out.push(b'%');
+            out.push(b'2');
+            out.push(b'5');
+            i += 1;
+            continue;
+        }
+        if SAFE.contains(&byte) {
+            out.push(byte);
+        } else {
+            push_percent(&mut out, byte);
+        }
+        i += 1;
     }
     out
+}
+
+/// UTF-8 首字节对应的序列长度。
+fn utf8_len(first: u8) -> usize {
+    if first < 0x80 {
+        1
+    } else if first & 0xe0 == 0xc0 {
+        2
+    } else if first & 0xf0 == 0xe0 {
+        3
+    } else if first & 0xf8 == 0xf0 {
+        4
+    } else {
+        1
+    }
+}
+
+fn push_percent(out: &mut Vec<u8>, byte: u8) {
+    out.push(b'%');
+    out.push(hex_digit(byte >> 4));
+    out.push(hex_digit(byte & 0x0f));
 }
 
 /// 百分号编码用的十六进制字符。
@@ -92,8 +140,13 @@ fn hex_digit(value: u8) -> u8 {
 }
 
 /// 对应 parseInlineLinkDest：tokens 从开括号 ( 开始。
-/// 返回 (passed 的字节数, 目标)。
-pub(super) fn parse_inline_link_dest(tokens: &[u8]) -> Option<(usize, Vec<u8>)> {
+///
+/// 返回 (passed 字节数, remains 起点, 目标)。
+///
+/// 第二个值是 Lute 里 `remains` 的起点，**它不一定等于 passed 的末尾**：
+/// 目标以 `)` 闭合时 Lute 的 `passed` 含这个 `)`，而 `remains` 也从 `)` 处开始，
+/// 两者重叠一个字节。调用方要拿它判断“后面跟的是什么”，不能拿 passed 末尾算。
+pub(super) fn parse_inline_link_dest(tokens: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     if tokens.len() < 2 {
         return None;
     }
@@ -123,7 +176,8 @@ pub(super) fn parse_inline_link_dest(tokens: &[u8]) -> Option<(usize, Vec<u8>)> 
             passed_len += 1;
         }
         let destination = encode_destination(&unescape_backslashes(&destination));
-        return Some((passed_len, destination));
+        // 尖括号分支里 remains 从 passed 末尾开始，没有重叠
+        return Some((passed_len, passed_len, destination));
     }
 
     let mut destination: Vec<u8> = Vec::new();
@@ -171,7 +225,66 @@ pub(super) fn parse_inline_link_dest(tokens: &[u8]) -> Option<(usize, Vec<u8>)> 
         return None;
     }
     let destination = encode_destination(&unescape_backslashes(&destination));
-    Some((passed_len, destination))
+    // remains 从 break 处开始：`)` 闭合时指回那个 `)`，遇到空白时指向空白本身
+    Some((passed_len, i, destination))
+}
+
+/// 对应 html.DecodeDestination：把百分号编码还原成字节。
+///
+/// 非法序列原样保留；多字节 UTF-8 序列按 `%XX%XX...` 组装，残缺时写 U+FFFD。
+pub(super) fn decode_destination(rawurl: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::with_capacity(rawurl.len());
+    let mut i = 0usize;
+    while i < rawurl.len() {
+        if rawurl[i] == b'%'
+            && i + 2 < rawurl.len()
+            && rawurl[i + 1].is_ascii_hexdigit()
+            && rawurl[i + 2].is_ascii_hexdigit()
+        {
+            let byte = (unhex(rawurl[i + 1]) << 4) | unhex(rawurl[i + 2]);
+            if byte < 0x80 {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+            let need = utf8_len(byte).saturating_sub(1);
+            let mut sequence = vec![byte];
+            let mut cursor = i + 3;
+            let mut complete = true;
+            for _ in 0..need {
+                if cursor + 2 < rawurl.len()
+                    && rawurl[cursor] == b'%'
+                    && rawurl[cursor + 1].is_ascii_hexdigit()
+                    && rawurl[cursor + 2].is_ascii_hexdigit()
+                {
+                    sequence.push((unhex(rawurl[cursor + 1]) << 4) | unhex(rawurl[cursor + 2]));
+                    cursor += 3;
+                } else {
+                    complete = false;
+                    break;
+                }
+            }
+            if complete {
+                out.extend_from_slice(&sequence);
+                i = cursor;
+            } else {
+                out.extend_from_slice("\u{FFFD}".as_bytes());
+                i += 3;
+            }
+            continue;
+        }
+        out.push(rawurl[i]);
+        i += 1;
+    }
+    out
+}
+
+fn unhex(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        _ => byte - b'A' + 10,
+    }
 }
 
 /// 对应 parseLinkDest1：尖括号包裹的目标。

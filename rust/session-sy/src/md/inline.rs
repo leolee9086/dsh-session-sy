@@ -5,11 +5,14 @@
 //! 只实现 CommonMark 规范用例覆盖到的部分；未涉及的分支（链接、图片、内联 HTML、
 //! 公式等）留作后续，字符会被当作普通文本。
 
+mod auto_link;
 mod autolink;
+mod emoji;
 mod bracket;
 mod emphasis;
 mod html;
 mod link;
+mod math;
 mod text;
 
 use std::fmt::Write as _;
@@ -17,6 +20,7 @@ use std::fmt::Write as _;
 use serde_json::{json, Value};
 
 use super::util::write_json_string;
+use super::Options;
 
 pub(crate) use link::*;
 
@@ -54,6 +58,10 @@ struct Bracket {
 
 struct Parser<'a> {
     tokens: &'a [u8],
+    /// 引擎配置，决定哪些行内语法启用。
+    options: &'a Options,
+    /// 当前块是不是标题（HeadingID 只在标题里生效）。
+    is_heading: bool,
     pos: usize,
     nodes: Vec<Node>,
     root: Vec<usize>,
@@ -67,9 +75,13 @@ struct Parser<'a> {
 pub fn parse(
     tokens: &[u8],
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
+    options: &Options,
+    is_heading: bool,
 ) -> Vec<Value> {
     let mut parser = Parser {
         tokens,
+        options,
+        is_heading,
         pos: 0,
         nodes: Vec::new(),
         root: Vec::new(),
@@ -79,6 +91,12 @@ pub fn parse(
         defs,
     };
     parser.run();
+    if options.gfm_auto_link {
+        parser.apply_auto_links();
+    }
+    if options.emoji {
+        parser.apply_emoji();
+    }
     parser.render()
 }
 
@@ -89,9 +107,13 @@ pub fn parse_to_json(
     tokens: &[u8],
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
     out: &mut String,
+    options: &Options,
+    is_heading: bool,
 ) {
     let mut parser = Parser {
         tokens,
+        options,
+        is_heading,
         pos: 0,
         nodes: Vec::new(),
         root: Vec::new(),
@@ -101,6 +123,12 @@ pub fn parse_to_json(
         defs,
     };
     parser.run();
+    if options.gfm_auto_link {
+        parser.apply_auto_links();
+    }
+    if options.emoji {
+        parser.apply_emoji();
+    }
     parser.write_nodes_json(out);
 }
 
@@ -110,9 +138,13 @@ pub fn parse_to_json_flat(
     defs: &std::collections::HashMap<Vec<u8>, (Vec<u8>, Option<Vec<u8>>)>,
     out: &mut String,
     first: &mut bool,
+    options: &Options,
+    is_heading: bool,
 ) {
     let mut parser = Parser {
         tokens,
+        options,
+        is_heading,
         pos: 0,
         nodes: Vec::new(),
         root: Vec::new(),
@@ -122,6 +154,12 @@ pub fn parse_to_json_flat(
         defs,
     };
     parser.run();
+    if options.gfm_auto_link {
+        parser.apply_auto_links();
+    }
+    if options.emoji {
+        parser.apply_emoji();
+    }
     parser.write_nodes_flat_json(out, first);
 }
 
@@ -146,7 +184,7 @@ impl<'a> Parser<'a> {
             match token {
                 b'\\' => self.parse_backslash(),
                 b'\x60' => self.parse_code_span(),
-                b'*' | b'_' => self.handle_delim(token),
+                b'*' | b'_' | b'~' => self.handle_delim(token),
                 b'\n' => self.parse_newline(),
                 b'[' => self.parse_open_bracket(),
                 b']' => self.parse_close_bracket(),
@@ -162,6 +200,8 @@ impl<'a> Parser<'a> {
                     }
                 }
                 b'&' => self.parse_entity(),
+                b'$' => self.parse_inline_math(),
+                b'{' => self.parse_heading_id(),
                 _ => self.parse_text(),
             }
         }
@@ -222,7 +262,9 @@ impl<'a> Parser<'a> {
                 self.write_node_json(*child, out);
             }
             out.push(']');
-        } else if !node.data.is_empty() {
+        }
+        // Data 和 Children 可以同时存在（Lute 是 json.Marshal，两者互不排斥）
+        if !node.data.is_empty() {
             out.push_str(",\"Data\":");
             write_json_string(out, &String::from_utf8_lossy(&node.data));
         }
@@ -243,8 +285,9 @@ impl<'a> Parser<'a> {
         if !node.children.is_empty() {
             let children: Vec<Value> = node.children.iter().map(|child| self.render_node(*child)).collect();
             object.insert("Children".into(), Value::Array(children));
-        } else if !node.data.is_empty() {
-            // 空内容不写 Data（对应 Go 的 omitempty）
+        }
+        if !node.data.is_empty() {
+            // 空内容不写 Data（对应 Go 的 omitempty）；Data 与 Children 可以并存
             object.insert("Data".into(), json!(String::from_utf8_lossy(&node.data).to_string()));
         }
         for (key, value) in &node.attrs {

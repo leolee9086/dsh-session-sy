@@ -9,13 +9,16 @@ mod r#continue;
 mod finalize;
 mod html;
 mod inline;
+mod options;
 mod render;
 mod start;
+mod table;
 mod util;
 
 use serde_json::Value;
 
 use html::html_block_closes;
+pub use options::Options;
 
 /// 块节点。用 arena 存，子节点存下标，模拟 Lute 的 Tip / parent / LastChild。
 #[derive(Default)]
@@ -68,6 +71,9 @@ struct Parser {
     blank: bool,
     partially_consumed_tab: bool,
     all_closed: bool,
+
+    /// 引擎配置，决定哪些语法被启用。对应 Lute 的 ParseOption。
+    options: Options,
 }
 
 /// 解析 markdown，直接输出 Lute 风格的 JSON 文本。
@@ -76,7 +82,12 @@ struct Parser {
 /// Value 树里每个 key 都是一次堆分配，一个段落节点要十几次；直出把这部分
 /// 摊平成一次缓冲区追加。
 pub fn parse_to_json(src: &str) -> String {
-    let mut parser = Parser::new();
+    parse_to_json_with(src, &Options::commonmark())
+}
+
+/// 用指定配置解析，直接输出 JSON 文本。
+pub fn parse_to_json_with(src: &str, options: &Options) -> String {
+    let mut parser = Parser::new(options.clone());
     let root = parser.add_root();
     parser.tip = Some(root);
     parser.parse_blocks(src);
@@ -91,15 +102,52 @@ pub fn parse_to_json(src: &str) -> String {
 ///
 /// 需要操作树（往文档里塞节点）时用这个；只想要 JSON 文本时用 `parse_to_json`。
 pub fn parse(src: &str) -> Value {
-    let mut parser = Parser::new();
+    parse_with(src, &Options::commonmark())
+}
+
+/// 用指定配置解析，返回 NodeDocument。
+pub fn parse_with(src: &str, options: &Options) -> Value {
+    let mut parser = Parser::new(options.clone());
     let root = parser.add_root();
     parser.tip = Some(root);
     parser.parse_blocks(src);
     parser.render(root)
 }
 
+/// 对应 Lute 的 `lex.NewLexer` + `Lexer.NextLine` 对输入的预处理：
+///
+/// - 末尾没有换行就补一个；
+/// - `\r` 换成 `\n`，`\r\n` 只算一个换行；
+/// - NUL 字节换成 U+FFFD。
+///
+/// 绝大多数输入（尤其是我们自己生成的）不需要动，这时直接借用原文，零拷贝。
+fn normalize_source(src: &str) -> std::borrow::Cow<'_, str> {
+    let needs_fixup = src.bytes().any(|b| b == b'\r' || b == 0) || !src.ends_with('\n');
+    if !needs_fixup {
+        return std::borrow::Cow::Borrowed(src);
+    }
+    let mut out = String::with_capacity(src.len() + 1);
+    let mut chars = src.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\r' => {
+                out.push('\n');
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            '\0' => out.push('\u{FFFD}'),
+            other => out.push(other),
+        }
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 impl Parser {
-    fn new() -> Self {
+    fn new(options: Options) -> Self {
         Parser {
             nodes: Vec::new(),
             tip: None,
@@ -116,6 +164,7 @@ impl Parser {
             blank: false,
             partially_consumed_tab: false,
             all_closed: false,
+            options,
         }
     }
 
@@ -142,6 +191,9 @@ impl Parser {
 
     /// 对应 Lute 的 parseBlocks：逐行喂给 incorporateLine，最后关闭所有未闭合块。
     fn parse_blocks(&mut self, src: &str) {
+        // 对应 Lute 的 lex.Lexer 预处理：CRLF 规范化、NUL 替换、末尾补换行。
+        let normalized = normalize_source(src);
+        let src: &str = &normalized;
         // 预留节点容量：节点数组是全程最热的分配，按经验每 12 字节原文约一个节点。
         // 一次给足，省掉十几轮翻倍扩容和整表 memcpy。
         self.nodes.reserve(src.len() / 12);
@@ -303,6 +355,9 @@ impl Parser {
         if self.html_block_start(container) {
             return Some((self.tip?, true));
         }
+        if self.yaml_front_matter_start(container) {
+            return Some((self.tip?, true));
+        }
         if self.thematic_break_start(container) {
             return Some((self.tip?, true));
         }
@@ -315,10 +370,23 @@ impl Parser {
         None
     }
 
+    /// 对应 ast.Node.AcceptLines：能吸收原始行的块类型。
     fn accepts_lines(&self, index: usize) -> bool {
         matches!(
             self.nodes[index].node_type,
-            "NodeParagraph" | "NodeCodeBlock" | "NodeHTMLBlock"
+            "NodeParagraph"
+                | "NodeCodeBlock"
+                | "NodeHTMLBlock"
+                | "NodeMathBlock"
+                | "NodeYamlFrontMatter"
+                | "NodeBlockQueryEmbed"
+                | "NodeGitConflict"
+                | "NodeIFrame"
+                | "NodeWidget"
+                | "NodeVideo"
+                | "NodeAudio"
+                | "NodeAttributeView"
+                | "NodeCustomBlock"
         )
     }
 
@@ -393,7 +461,13 @@ impl Parser {
             "NodeCodeBlock" => self.code_block_finalize(block),
             "NodeHTMLBlock" => self.html_block_finalize(block),
             "NodeList" => self.list_finalize(block),
-            "NodeParagraph" => self.paragraph_finalize(block),
+            "NodeYamlFrontMatter" => self.yaml_front_matter_finalize(block),
+            "NodeParagraph" => {
+                // 段落可能被解析成表格，那时 Tip 已经指向表节点，不能再复位
+                if self.paragraph_finalize(block) {
+                    return;
+                }
+            }
             _ => {}
         }
         self.tip = parent;
@@ -491,7 +565,7 @@ impl Parser {
 /// 正常路径不经过这里，改解析逻辑时不需要管它。
 #[doc(hidden)]
 pub fn bench_blocks_nanos(src: &str) -> u64 {
-    let mut parser = Parser::new();
+    let mut parser = Parser::new(Options::commonmark());
     let root = parser.add_root();
     parser.tip = Some(root);
     let start = std::time::Instant::now();

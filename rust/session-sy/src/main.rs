@@ -179,21 +179,43 @@ fn cmd_render(args: &[String]) -> Result<String, String> {
     ))
 }
 
+/// 从命令行里取 `--config` 指定的引擎配置，缺省是 commonmark。
+fn parse_config(args: &[String]) -> Result<md::Options, String> {
+    if let Some(position) = args.iter().position(|item| item == "--config") {
+        if let Some(name) = args.get(position + 1) {
+            return match name.as_str() {
+                "siyuan" => Ok(md::Options::siyuan()),
+                "default" => Ok(md::Options::default()),
+                "commonmark" => Ok(md::Options::commonmark()),
+                other => Err(format!("未知配置: {other}")),
+            };
+        }
+    }
+    Ok(md::Options::commonmark())
+}
+
 /// 把一段 markdown 解析成 Lute 风格的 AST，用于对照参考实现。
+///
+/// `--config commonmark|default|siyuan` 选择引擎配置，默认 commonmark。
 fn cmd_parse(args: &[String]) -> Result<String, String> {
     let text = args.first().ok_or("parse 需要一段 markdown")?;
+    let options = parse_config(args)?;
     let mut source = text.clone();
     if !source.ends_with('\n') {
         source.push('\n');
     }
-    let tree = md::parse(&source);
+    let tree = md::parse_with(&source, &options);
     serde_json::to_string_pretty(&tree).map_err(|error| error.to_string())
 }
 
 /// 跑 CommonMark 规范的等价测试：同一段 markdown，Rust 的 AST 必须等于 Lute 的 AST。
 fn cmd_conformance(args: &[String]) -> Result<String, String> {
     let path = args.first().ok_or("conformance 需要 fixture 路径")?;
-    let only_section = args.get(1).map(String::as_str);
+    let options = parse_config(args)?;
+    let only_section = args
+        .get(1)
+        .filter(|item| !item.starts_with("--"))
+        .map(String::as_str);
     let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let cases: Vec<Value> = serde_json::from_str(&text).map_err(|error| error.to_string())?;
     let mut pass = 0usize;
@@ -205,7 +227,7 @@ fn cmd_conformance(args: &[String]) -> Result<String, String> {
             .and_then(Value::as_str)
             .and_then(|tree| serde_json::from_str(tree).ok())
             .unwrap_or(Value::Null);
-        let actual = md::parse(markdown);
+        let actual = md::parse_with(markdown, &options);
         if actual == expected {
             pass += 1;
             continue;
@@ -233,7 +255,7 @@ fn cmd_conformance(args: &[String]) -> Result<String, String> {
             .and_then(Value::as_str)
             .and_then(|tree| serde_json::from_str(tree).ok())
             .unwrap_or(Value::Null);
-        let actual = md::parse(markdown);
+        let actual = md::parse_with(markdown, &options);
         let section = case.get("section").and_then(Value::as_str).unwrap_or("?").to_owned();
         let entry = sections.entry(section).or_insert((0usize, 0usize));
         entry.1 += 1;

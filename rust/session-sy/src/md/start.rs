@@ -6,6 +6,38 @@ use super::util::{base64, is_whitespace, lists_match, strip_closing_crosshatch};
 use super::{inline, ListData, Parser};
 
 impl Parser {
+
+    /// 对应 YamlFrontMatterStart：只在文档最开头、当前行恰好以 3 个 - 开头时成立。
+    pub(super) fn yaml_front_matter_start(&mut self, _container: usize) -> bool {
+        if !self.options.yaml_front_matter || self.indented || !self.nodes[0].children.is_empty() {
+            return false;
+        }
+        if !self.yaml_front_matter_marker() {
+            return false;
+        }
+        let node = self.new_node("NodeYamlFrontMatter");
+        self.append_child(0, node);
+        self.tip = Some(node);
+        true
+    }
+
+    /// 当前行是否恰好由 3 个 - 开头（不看缩进，对应 parseYamlFrontMatter）。
+    fn yaml_front_matter_marker(&self) -> bool {
+        if self.current_line.first() != Some(&b'-') {
+            return false;
+        }
+        let mut count = 0usize;
+        while count < self.current_line.len() && self.current_line[count] == b'-' {
+            count += 1;
+        }
+        count == 3
+    }
+
+    /// 对应 isYamlFrontMatterClose：同样要求恰好 3 个 -。
+    pub(super) fn yaml_front_matter_close(&self) -> bool {
+        self.yaml_front_matter_marker()
+    }
+
     pub(super) fn atx_heading_start(&mut self, _container: usize) -> bool {
         if self.indented {
             return false;
