@@ -185,6 +185,7 @@ fn parse_config(args: &[String]) -> Result<md::Options, String> {
         if let Some(name) = args.get(position + 1) {
             return match name.as_str() {
                 "siyuan" => Ok(md::Options::siyuan()),
+                "extended" => Ok(md::Options::extended()),
                 "default" => Ok(md::Options::default()),
                 "commonmark" => Ok(md::Options::commonmark()),
                 other => Err(format!("未知配置: {other}")),

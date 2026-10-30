@@ -7,6 +7,7 @@
 
 mod auto_link;
 mod autolink;
+mod block_ref;
 mod emoji;
 mod bracket;
 mod emphasis;
@@ -192,7 +193,15 @@ impl<'a> Parser<'a> {
             match token {
                 b'\\' => self.parse_backslash(),
                 b'\x60' => self.parse_code_span(),
-                b'*' | b'_' | b'~' => self.handle_delim(token),
+                b'*' | b'_' | b'~' | b'=' | b'#' => self.handle_delim(token),
+                b'^' => {
+                    // Lute：上标只在开关打开时把 ^ 当分隔符，否则是普通文本
+                    if self.options.sup {
+                        self.handle_delim(token);
+                    } else {
+                        self.parse_text();
+                    }
+                }
                 b'\n' => self.parse_newline(),
                 b'[' => self.parse_open_bracket(),
                 b']' => self.parse_close_bracket(),
@@ -210,6 +219,7 @@ impl<'a> Parser<'a> {
                 b'&' => self.parse_entity(),
                 b'$' => self.parse_inline_math(),
                 b'{' => self.parse_heading_id(),
+                b'(' => self.parse_block_ref(),
                 _ => self.parse_text(),
             }
         }
@@ -313,7 +323,11 @@ fn trim_right(tokens: &[u8]) -> Vec<u8> {
     tokens[..end].to_vec()
 }
 
-fn is_marker(token: u8) -> bool {
+fn is_marker(options: &Options, token: u8) -> bool {
+    // 对应 Lute 的 isMarker：上标开关打开时 ^ 也算潜在标记符
+    if options.sup && token == b'^' {
+        return true;
+    }
     matches!(
         token,
         b'*' | b'_' | b'[' | b'!' | b'\n' | b'\\' | b'\x60' | b'<' | b']' | b'&' | b'~' | b'$'
@@ -330,7 +344,42 @@ fn is_ascii_punct(token: u8) -> bool {
 }
 
 /// 对应 scanDelims：判断分隔符能否开始/结束一个强调。
-fn scan_delims(tokens: &[u8], start: usize, end: usize, typ: u8) -> (bool, bool) {
+fn scan_delims(
+    options: &Options,
+    tokens: &[u8],
+    start: usize,
+    end: usize,
+    typ: u8,
+) -> (bool, bool) {
+    let count = end.saturating_sub(start);
+    // Lute 的 scanDelims 对各种标记还有额外的开关与数量限制，不满足就既不能开也不能关。
+    // 少了这一层，等号/井号/插入符会被塞进分隔符链表，打乱星号的配对顺序。
+    let allowed = match typ {
+        b'=' => options.mark && count == 2,
+        b'#' => options.tag && count == 1,
+        b'^' => options.sup && count == 1,
+        b'~' => {
+            if options.sub {
+                if options.gfm_strikethrough && count == 3 {
+                    true
+                } else if count != 1 {
+                    // 下标模式下只有两个波浪号还能当删除线用
+                    options.gfm_strikethrough && count == 2
+                } else {
+                    true
+                }
+            } else if options.gfm_strikethrough {
+                count != 1 || options.gfm_strikethrough1
+            } else {
+                true
+            }
+        }
+        _ => true,
+    };
+    if !allowed {
+        return (false, false);
+    }
+
     let before = if start > 0 {
         last_char(&tokens[..start])
     } else {

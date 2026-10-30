@@ -177,6 +177,21 @@ impl Options {
     }
 
     /// SiYuan 内核 `kernel/util/lute.go` 的 `NewLute()`。
+    /// Lute 自己的 JSON 渲染测试（`test/json_renderer_test.go`）用的配置：
+    /// 在 `lute.New()`（即 `default()`）之上再打开上标、下标、高亮、块引用、标签、
+    /// 文件注解引用。
+    pub fn extended() -> Self {
+        Options {
+            sup: true,
+            sub: true,
+            mark: true,
+            block_ref: true,
+            tag: true,
+            file_annotation_ref: true,
+            ..Options::default()
+        }
+    }
+
     pub fn siyuan() -> Self {
         Options {
             keep_escaped: true,

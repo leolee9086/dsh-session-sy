@@ -79,6 +79,78 @@ fn direct_json_matches_tree() {
     );
 }
 
+/// Lute 官方 JSON 用例（`test/json_renderer_test.go`）的等价测试。
+///
+/// 这套用的配置是 `lute.New()` 再加 Sup/Sub/Mark/BlockRef/Tag/FileAnnotationRef，
+/// 也就是 `Options::extended()`。它覆盖的是 default 那套测不到的扩展语法：
+/// 高亮、上标、下标、标签、块引用、内容块查询嵌入。
+#[test]
+fn extended_config_conformance() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures-extended.json");
+    let text = std::fs::read_to_string(path).expect("读取 fixtures 失败");
+    let cases: Vec<Value> = serde_json::from_str(&text).expect("fixtures 不是 JSON 数组");
+    assert!(!cases.is_empty(), "fixtures 是空的");
+
+    let options = session_sy::md::Options::extended();
+    let mut failures: Vec<String> = Vec::new();
+    for case in &cases {
+        let markdown = case.get("markdown").and_then(Value::as_str).unwrap_or("");
+        let expected: Value = case
+            .get("tree")
+            .and_then(Value::as_str)
+            .and_then(|tree| serde_json::from_str(tree).ok())
+            .unwrap_or(Value::Null);
+        let actual = session_sy::md::parse_with(markdown, &options);
+        if actual == expected {
+            continue;
+        }
+        let section = case.get("section").and_then(Value::as_str).unwrap_or("");
+        failures.push(format!("{section} {markdown:?}"));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} / {} 条不匹配：\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+
+/// extended 配置下，直出路径与 Value 路径必须一致。
+#[test]
+fn extended_direct_json_matches_tree() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures-extended.json");
+    let text = std::fs::read_to_string(path).expect("读取 fixtures 失败");
+    let cases: Vec<Value> = serde_json::from_str(&text).expect("fixtures 不是 JSON 数组");
+    let options = session_sy::md::Options::extended();
+
+    let mut failures: Vec<String> = Vec::new();
+    for case in &cases {
+        let markdown = case.get("markdown").and_then(Value::as_str).unwrap_or("");
+        let tree = session_sy::md::parse_with(markdown, &options);
+        let direct = session_sy::md::parse_to_json_with(markdown, &options);
+        let reparsed: Value = match serde_json::from_str(&direct) {
+            Ok(value) => value,
+            Err(error) => {
+                failures.push(format!("直出不是合法 JSON: {error}\n  {direct}"));
+                continue;
+            }
+        };
+        if reparsed != tree {
+            failures.push(format!("直出与树不一致\n  直出: {direct}\n  树: {tree}"));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "{} / {} 条直出不一致：\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+
 /// default 配置（对齐 Lute 的 `lute.New()`，即 Vditor 基础配置）的等价测试。
 ///
 /// 这一套才会打开表格、自动链接、Emoji、内联公式、删除线、YAML 头、标题 ID 等扩展语法，

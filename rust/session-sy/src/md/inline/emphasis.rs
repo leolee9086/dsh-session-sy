@@ -10,7 +10,7 @@ impl<'a> Parser<'a> {
             count += 1;
             self.pos += 1;
         }
-        let (can_open, can_close) = scan_delims(self.tokens, start, self.pos, typ);
+        let (can_open, can_close) = scan_delims(&self.options, self.tokens, start, self.pos, typ);
         let node = self.new_node("NodeText");
         self.nodes[node].data = self.tokens[start..self.pos].to_vec();
         self.append(node);
@@ -43,6 +43,47 @@ impl<'a> Parser<'a> {
         match next {
             Some(next) => self.delims[next].prev = prev,
             None => self.top = prev,
+        }
+    }
+
+/// 对应 processEmphasis 里「找到 opener 之后」的一串前置条件：
+    /// 各种标记的开关、数量必须一致、标签内容不能是空白。
+    fn pair_allowed(&self, typ: u8, opener: usize, closer: usize) -> bool {
+        let opener_num = self.delims[opener].num;
+        let closer_num = self.delims[closer].num;
+        match typ {
+            b'#' => {
+                if !self.options.tag || opener_num != closer_num {
+                    return false;
+                }
+                // 标签内容去掉插入符和零宽空格后不能是空白
+                let opener_node = self.delims[opener].node;
+                let closer_node = self.delims[closer].node;
+                let Some((parent, start)) = self.find_parent_and_index(opener_node) else {
+                    return false;
+                };
+                let siblings: &[usize] = match parent {
+                    None => &self.root,
+                    Some(index) => &self.nodes[index].children,
+                };
+                let Some(end) = siblings.iter().position(|item| *item == closer_node) else {
+                    return false;
+                };
+                let mut content = String::new();
+                for &node in &siblings[start + 1..end] {
+                    content.push_str(&String::from_utf8_lossy(&self.nodes[node].data));
+                }
+                content.retain(|ch| ch != '\u{2038}' && ch != '\u{200b}');
+                !content.trim().is_empty()
+            }
+            b'^' => self.options.sup && opener_num == closer_num,
+            b'=' => self.options.mark && opener_num == closer_num,
+            b'~' => {
+                (self.options.gfm_strikethrough || self.options.sub) && opener_num == closer_num
+            }
+            b'*' => self.options.inline_asterisk,
+            b'_' => self.options.inline_underscore,
+            _ => true,
         }
     }
 
@@ -118,10 +159,8 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let opener = opener.unwrap();
-            // Lute：波浪号两侧的标记数量必须一致才能配对（~x~~ 不算）
-            if self.delims[current].typ == b'~'
-                && self.delims[opener].num != self.delims[current].num
-            {
+            // Lute 在找到 opener 之后还有一串开关与数量条件，全过不了就跳过这个 closer
+            if !self.pair_allowed(typ, opener, current) {
                 closer = self.delims[current].next;
                 continue;
             }
@@ -152,11 +191,25 @@ impl<'a> Parser<'a> {
                 (b'_', 1) => ("NodeEmphasis", "NodeEmU8eOpenMarker", "NodeEmU8eCloseMarker"),
                 (b'*', _) => ("NodeStrong", "NodeStrongA6kOpenMarker", "NodeStrongA6kCloseMarker"),
                 (b'_', _) => ("NodeStrong", "NodeStrongU8eOpenMarker", "NodeStrongU8eCloseMarker"),
+                // 单个波浪号：下标优先于删除线
+                (b'~', 1) if self.options.sub => ("NodeSub", "NodeSubOpenMarker", "NodeSubCloseMarker"),
                 (b'~', 1) if self.options.gfm_strikethrough && self.options.gfm_strikethrough1 => (
                     "NodeStrikethrough",
                     "NodeStrikethrough1OpenMarker",
                     "NodeStrikethrough1CloseMarker",
                 ),
+                (b'=', 1) if self.options.mark => (
+                    "NodeMark",
+                    "NodeMark1OpenMarker",
+                    "NodeMark1CloseMarker",
+                ),
+                (b'=', _) if self.options.mark => (
+                    "NodeMark",
+                    "NodeMark2OpenMarker",
+                    "NodeMark2CloseMarker",
+                ),
+                (b'#', 1) if self.options.tag => ("NodeTag", "NodeTagOpenMarker", "NodeTagCloseMarker"),
+                (b'^', 1) if self.options.sup => ("NodeSup", "NodeSupOpenMarker", "NodeSupCloseMarker"),
                 (b'~', _) if self.options.gfm_strikethrough => (
                     "NodeStrikethrough",
                     "NodeStrikethrough2OpenMarker",

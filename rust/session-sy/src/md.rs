@@ -50,6 +50,8 @@ struct ListData {
     marker_offset: usize,
     marker: String,
     num: i64,
+    /// 任务列表项是否勾选。只有 Typ=3 的列表项才有值，未勾选时序列化会省略。
+    checked: Option<bool>,
 }
 
 struct Parser {
@@ -338,7 +340,7 @@ impl Parser {
         };
         matches!(
             marker,
-            b'#' | b'>' | b'-' | b'*' | b'+' | b'_' | b'=' | b'\x60' | b'~' | b'<' | b'[' | b'{'
+            b'#' | b'>' | b'-' | b'*' | b'+' | b'_' | b'=' | b'\x60' | b'~' | b'<' | b'[' | b'{' | b'$'
         ) || marker.is_ascii_digit()
     }
 
@@ -368,6 +370,12 @@ impl Parser {
         }
         if self.list_start(container) {
             return Some((self.tip?, false));
+        }
+        if self.math_block_start(container) {
+            return Some((self.tip?, true));
+        }
+        if self.block_query_embed_start(container) {
+            return Some((self.tip?, true));
         }
         if self.indent_code_block_start(container) {
             return Some((self.tip?, true));
@@ -523,6 +531,7 @@ impl Parser {
             "NodeHTMLBlock" => self.html_block_finalize(block),
             "NodeList" => self.list_finalize(block),
             "NodeYamlFrontMatter" => self.yaml_front_matter_finalize(block),
+            "NodeMathBlock" => self.math_block_finalize(block),
             "NodeParagraph" => {
                 // 段落可能被解析成表格，那时 Tip 已经指向表节点，不能再复位
                 if self.paragraph_finalize(block) {

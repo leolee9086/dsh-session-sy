@@ -2,8 +2,16 @@
 
 use serde_json::json;
 
-use super::util::{base64, is_whitespace, lists_match, strip_closing_crosshatch};
+use super::util::{base64, is_whitespace, lists_match, strip_closing_crosshatch, trim_whitespace};
 use super::{inline, ListData, Parser};
+
+/// 对应 Options.IsValidTaskListItemMarker：默认只认空格、x、X。
+fn is_valid_task_marker(marker: u8, arbitrary: bool) -> bool {
+    marker == b' '
+        || marker == b'x'
+        || marker == b'X'
+        || (arbitrary && marker != b'[' && marker != b']')
+}
 
 impl Parser {
 
@@ -193,6 +201,76 @@ impl Parser {
         true
     }
 
+    /// 对应 BlockQueryEmbedStart：行首 `{{ ... }}` 是一个内容块查询嵌入。
+    pub(super) fn block_query_embed_start(&mut self, _container: usize) -> bool {
+        if !self.options.block_ref || self.indented {
+            return false;
+        }
+        let Some(script) = self.parse_block_query_embed() else {
+            return false;
+        };
+        self.close_unmatched_blocks();
+        let block = self.add_child("NodeBlockQueryEmbed");
+        // 子节点依次是 {{ 查询脚本 }}，每个花括号都是独立的节点
+        for node_type in ["NodeOpenBrace", "NodeOpenBrace"] {
+            let child = self.new_node(node_type);
+            self.append_child(block, child);
+        }
+        let script_node = self.new_node("NodeBlockQueryEmbedScript");
+        self.nodes[script_node].tokens = script;
+        self.append_child(block, script_node);
+        for node_type in ["NodeCloseBrace", "NodeCloseBrace"] {
+            let child = self.new_node(node_type);
+            self.append_child(block, child);
+        }
+        true
+    }
+
+    /// 对应 parseBlockQueryEmbed：从行首 `{{` 到行尾 `}}`，中间是查询脚本。
+    fn parse_block_query_embed(&self) -> Option<Vec<u8>> {
+        let start = self.next_nonspace.min(self.current_line.len());
+        let tokens = &self.current_line[start..];
+        if !tokens.starts_with(b"{{") {
+            return None;
+        }
+        let body = trim_whitespace(&tokens[2..]);
+        if !body.ends_with(b"}}") {
+            return None;
+        }
+        Some(trim_whitespace(&body[..body.len() - 2]))
+    }
+
+    /// 对应 MathBlockStart：行首至少两个 `$` 就是数学公式块的开始。
+    pub(super) fn math_block_start(&mut self, _container: usize) -> bool {
+        if self.indented {
+            return false;
+        }
+        let rest = self.rest_of_line().to_vec();
+        if rest.first().copied() != Some(b'$') {
+            return false;
+        }
+        let mut len = 0usize;
+        while len < rest.len() && rest[len] == b'$' {
+            len += 1;
+        }
+        if len < 2 {
+            return false;
+        }
+        // `$` 前可能存在的缩进要记下来，续行时按它跳过
+        let offset = self.indent;
+        self.close_unmatched_blocks();
+        let block = self.add_child("NodeMathBlock");
+        // Lute 这个字段带 json:",omitempty"，值为 0 时不会出现在输出里
+        if offset > 0 {
+            self.nodes[block]
+                .attrs
+                .push(("MathBlockDollarOffset", json!(offset)));
+        }
+        self.advance_next_nonspace();
+        self.advance_offset(offset, false);
+        true
+    }
+
     pub(super) fn indent_code_block_start(&mut self, _container: usize) -> bool {
         if self.indent < 4 || self.blank {
             return false;
@@ -332,6 +410,20 @@ impl Parser {
             }
         } else {
             data.padding = marker_length + spaces_after_marker;
+        }
+        // 判定任务列表项：标记之后紧接 [ ]、[x] 或 [X]
+        if !is_blank_item && self.options.gfm_task_list_item {
+            let content = &ln[self.offset..];
+            if content.len() >= 3
+                && content[0] == b'['
+                && content[1] != b']'
+                && content[2] == b']'
+                && (content.len() == 3 || is_whitespace(content[3]))
+                && is_valid_task_marker(content[1], self.options.arbitrary_task_list_item_marker)
+            {
+                data.typ = 3;
+                data.checked = Some(content[1] != b' ');
+            }
         }
         data.marker = base64(&marker);
         Some(data)

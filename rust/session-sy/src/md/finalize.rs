@@ -29,6 +29,33 @@ impl Parser {
         self.append_child(node, close);
     }
 
+    /// 对应 mathBlockFinalize：把 `$$ ... $$` 拆成 开标记 / 内容 / 关标记 三个子节点。
+    pub(super) fn math_block_finalize(&mut self, node: usize) {
+        let tokens = self.nodes[node].tokens.clone();
+        if tokens.len() < 2 {
+            // 空内容也照样生成三个子节点，但 Tokens 保留原样（Lute 这一支不改 Tokens）
+            let open = self.new_node("NodeMathBlockOpenMarker");
+            let content = self.new_node("NodeMathBlockContent");
+            let close = self.new_node("NodeMathBlockCloseMarker");
+            self.append_child(node, open);
+            self.append_child(node, content);
+            self.append_child(node, close);
+            return;
+        }
+        let mut body = trim_whitespace(&tokens[2..]);
+        if body.ends_with(b"$$") {
+            body.truncate(body.len() - 2);
+        }
+        self.nodes[node].tokens = Vec::new();
+        let open = self.new_node("NodeMathBlockOpenMarker");
+        let content = self.new_node("NodeMathBlockContent");
+        self.nodes[content].tokens = body;
+        let close = self.new_node("NodeMathBlockCloseMarker");
+        self.append_child(node, open);
+        self.append_child(node, content);
+        self.append_child(node, close);
+    }
+
     /// 对应 Lute 的 codeBlockFinalize：围栏块丢掉首行，缩进块裁掉尾部空行。
     pub(super) fn code_block_finalize(&mut self, block: usize) {
         let fenced = self.nodes[block]

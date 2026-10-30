@@ -23,13 +23,19 @@ impl Parser {
             }
             "NodeParagraph" => {
                 let text = trim_trailing_blank(&node.tokens);
-                let children =
+                // 任务列表项：开头三个字节是标记符，要摘成独立节点再解析剩下的文本
+                let task = self.task_list_marker(index, &text);
+                let body: &[u8] = if task.is_some() { &text[3..] } else { &text };
+                let mut children =
                     inline::parse(
-                        &text,
+                        body,
                         &self.link_ref_defs,
                         &self.options,
                         inline::BlockKind::Paragraph,
                     );
+                if let Some((checked, marker)) = task {
+                    children.insert(0, render_task_marker(marker, checked));
+                }
                 let mut object = serde_json::Map::new();
                 object.insert("Type".into(), json!("NodeParagraph"));
                 // 块级 IAL 合并后的 Properties 等附加字段
@@ -148,6 +154,37 @@ impl Parser {
         }
     }
 
+/// 对应 paragraphFinalize 里摘任务列表标记符那一段。
+    ///
+    /// 只在父节点是 Typ=3 的列表项、且自己是它的第一个子节点时成立，
+    /// 返回 (是否勾选, 标记字节)。
+    fn task_list_marker(&self, index: usize, text: &[u8]) -> Option<(bool, u8)> {
+        let parent = self.nodes[index].parent?;
+        if self.nodes[parent].node_type != "NodeListItem" {
+            return None;
+        }
+        let list_data = self.nodes[parent].list_data.as_ref()?;
+        if list_data.typ != 3 {
+            return None;
+        }
+        if self.nodes[parent].children.first() != Some(&index) {
+            return None;
+        }
+        // Lute 要求段落内容超过 3 个字节，且第 4 个字节是空白
+        if text.len() <= 3 || text[0] != b'[' || text[2] != b']' || !text[3].is_ascii_whitespace() {
+            return None;
+        }
+        let marker = text[1];
+        let valid = marker == b' '
+            || marker == b'x'
+            || marker == b'X'
+            || (self.options.arbitrary_task_list_item_marker && marker != b'[' && marker != b']');
+        if !valid {
+            return None;
+        }
+        Some((marker != b' ', marker))
+    }
+
     fn render_code_block(&self, index: usize) -> Value {
         let node = &self.nodes[index];
         let fenced = node
@@ -230,9 +267,12 @@ fn write_list_data(out: &mut String, data: &ListData) {
         sep!();
         out.push_str("\"Tight\":true");
     }
-    if data.typ == 1 {
+    if data.typ != 0 {
         sep!();
-        out.push_str("\"Typ\":1");
+        out.push_str("\"Typ\":");
+        write_i64(out, data.typ);
+    }
+    if data.typ == 1 {
         if data.start != 0 {
             sep!();
             out.push_str("\"Start\":");
@@ -254,6 +294,10 @@ fn write_list_data(out: &mut String, data: &ListData) {
         out.push_str("\"MarkerOffset\":");
         write_i64(out, data.marker_offset as i64);
     }
+    if data.checked == Some(true) {
+        sep!();
+        out.push_str("\"Checked\":true");
+    }
     sep!();
     out.push_str("\"Marker\":");
     write_json_string(out, &data.marker);
@@ -268,13 +312,43 @@ fn write_list_data(out: &mut String, data: &ListData) {
     out.push('}');
 }
 
+/// 任务列表标记符节点：Data 是 `[ ]` / `[x]` / `[X]` 三个字节。
+fn render_task_marker(marker: u8, checked: bool) -> Value {
+    let mut object = serde_json::Map::new();
+    object.insert("Type".into(), json!("NodeTaskListItemMarker"));
+    object.insert(
+        "Data".into(),
+        json!(String::from_utf8_lossy(&[b'[', marker, b']']).to_string()),
+    );
+    // 只在勾选时出现（Go 的零值 omitempty）
+    if checked {
+        object.insert("TaskListItemChecked".into(), json!(true));
+    }
+    object.insert("TaskListItemMarker".into(), json!(marker));
+    Value::Object(object)
+}
+
+/// 直出路径的任务列表标记符节点，输出必须和 render_task_marker 一致。
+fn write_task_marker(out: &mut String, marker: u8, checked: bool) {
+    out.push_str("{\"Type\":\"NodeTaskListItemMarker\",\"Data\":");
+    write_json_string(out, &String::from_utf8_lossy(&[b'[', marker, b']']));
+    if checked {
+        out.push_str(",\"TaskListItemChecked\":true");
+    }
+    out.push_str(",\"TaskListItemMarker\":");
+    write_i64(out, marker as i64);
+    out.push('}');
+}
+
 fn render_list_data(data: &ListData) -> Value {
     let mut object = serde_json::Map::new();
     if data.tight {
         object.insert("Tight".into(), json!(true));
     }
+    if data.typ != 0 {
+        object.insert("Typ".into(), json!(data.typ));
+    }
     if data.typ == 1 {
-        object.insert("Typ".into(), json!(1));
         // Start 为 0 时同样省略
         if data.start != 0 {
             object.insert("Start".into(), json!(data.start));
@@ -286,6 +360,10 @@ fn render_list_data(data: &ListData) -> Value {
     object.insert("Padding".into(), json!(data.padding));
     if data.marker_offset > 0 {
         object.insert("MarkerOffset".into(), json!(data.marker_offset));
+    }
+    // Checked 只在勾选时出现（Go 的零值 omitempty）
+    if data.checked == Some(true) {
+        object.insert("Checked".into(), json!(true));
     }
     object.insert("Marker".into(), json!(data.marker));
     // Num 为 0 时省略（Go 的零值 omitempty）
@@ -319,15 +397,24 @@ impl Parser {
                     out.push(':');
                     let _ = write!(out, "{}", value);
                 }
-                out.push_str(",\"Children\":");
-                inline::parse_to_json(
-                    &text,
+                // 任务列表项：开头三个字节是标记符，要摘成独立节点再解析剩下的文本
+                let task = self.task_list_marker(index, &text);
+                let body: &[u8] = if task.is_some() { &text[3..] } else { &text };
+                out.push_str(",\"Children\":[");
+                let mut first = true;
+                if let Some((checked, marker)) = task {
+                    write_task_marker(out, marker, checked);
+                    first = false;
+                }
+                inline::parse_to_json_flat(
+                    body,
                     &self.link_ref_defs,
                     out,
+                    &mut first,
                     &self.options,
                     inline::BlockKind::Paragraph,
                 );
-                out.push('}');
+                out.push_str("]}");
             }
             "NodeTableCell" => {
                 // 直出路径的单元格：先把行内内容写进临时串，再决定要不要 Children

@@ -2,7 +2,7 @@
 
 use serde_json::json;
 
-use super::util::{base64, fence_len_rest, trim_right_whitespace};
+use super::util::{base64, fence_len_rest, trim_right_whitespace, trim_whitespace};
 use super::Parser;
 
 impl Parser {
@@ -17,6 +17,7 @@ impl Parser {
                 }
             }
             "NodeCodeBlock" => self.code_block_continue(node),
+            "NodeMathBlock" => self.math_block_continue(node),
             "NodeHTMLBlock" => self.html_block_continue(node),
             "NodeBlockquote" => self.blockquote_continue(node),
             "NodeListItem" => self.list_item_continue(node),
@@ -31,6 +32,26 @@ impl Parser {
             }
             _ => 0,
         }
+    }
+
+/// 对应 MathBlockContinue：遇到闭合行就收尾（返回 2），否则跳过 `$` 前可能的空格。
+    fn math_block_continue(&mut self, node: usize) -> i32 {
+        let rest = self.rest_of_line().to_vec();
+        if self.indent <= 3 && is_math_block_close(&rest) {
+            self.finalize(node);
+            return 2;
+        }
+        let mut remaining = self.attr_u64(node, "MathBlockDollarOffset").unwrap_or(0) as usize;
+        while remaining > 0 {
+            match self.current_line.get(self.offset) {
+                Some(b' ') | Some(b'\t') => {
+                    self.advance_offset(1, true);
+                    remaining -= 1;
+                }
+                _ => break,
+            }
+        }
+        0
     }
 
     fn code_block_continue(&mut self, node: usize) -> i32 {
@@ -115,3 +136,23 @@ impl Parser {
         1
     }
 }
+
+/// 对应 isMathBlockClose：整行只能是两个以上的 `$`。
+///
+/// 注意照抄 Lute 的判断顺序：先看开头至少两个 `$`，再把首尾空白裁掉，
+/// 剩下必须全是 `$`。所以 `$$ $$`（中间有空格）不算闭合。
+fn is_math_block_close(tokens: &[u8]) -> bool {
+    if tokens.first().copied() != Some(b'$') {
+        return false;
+    }
+    let mut len = 0usize;
+    while len < tokens.len() && tokens[len] == b'$' {
+        len += 1;
+    }
+    if len < 2 {
+        return false;
+    }
+    let trimmed = trim_whitespace(tokens);
+    trimmed.iter().all(|&byte| byte == b'$')
+}
+

@@ -7,7 +7,7 @@ use super::{is_ascii_punct, is_marker, trim_right, Parser};
 impl<'a> Parser<'a> {
     pub(super) fn parse_text(&mut self) {
         let start = self.pos;
-        while self.pos < self.tokens.len() && !is_marker(self.tokens[self.pos]) {
+        while self.pos < self.tokens.len() && !is_marker(&self.options, self.tokens[self.pos]) {
             self.pos += 1;
         }
         if self.pos == start {
