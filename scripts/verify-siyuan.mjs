@@ -16,9 +16,11 @@ import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-const here = 'D:/dev/session-sy'
-const BINARY = join(here, 'rust/verify/target/release/session-sy.exe')
-const SYCHECK = join(here, 'tools/sycheck/sycheck.exe')
+// 仓库根：本脚本在 scripts/ 下，往上一级
+const here = join(import.meta.dirname, '..')
+// 引擎二进制在兄弟仓库 rebec 里
+const BINARY = join(here, '..', 'rebec', 'target', 'release', 'rebec.exe')
+const SYCHECK = join(here, 'tools', 'sycheck', 'sycheck.exe')
 const SESSIONS = join(homedir(), '.dsh', 'sessions')
 
 /** 递归收集会话文件。 */

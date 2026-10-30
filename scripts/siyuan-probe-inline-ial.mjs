@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process'
 /** 问思源：块级与行内 IAL 各自能活到哪一步。 */
 const workspace = process.argv[2]
 const port = Number(process.argv[3])
-const WORK = 'D:/dev/session-sy/.tmp-inline-ial'
+const WORK = join(import.meta.dirname, '..', '.tmp-inline-ial')
 const stamp = new Date().toISOString().replace(/[-:TZ.]/gu, '').slice(0, 14)
 
 const docId = '20260101000000-abcdefg'

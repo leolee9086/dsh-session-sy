@@ -15,8 +15,10 @@ import { join } from 'node:path'
 
 import { connect, call, upload } from './siyuan-api.mjs'
 
-const here = 'D:/dev/session-sy'
-const BINARY = join(here, 'rust/verify/target/release/session-sy.exe')
+// 仓库根：本脚本在 scripts/ 下，往上一级
+const here = join(import.meta.dirname, '..')
+// 引擎二进制在兄弟仓库 rebec 里（rebec 是 Rust 包，产物是 exe / .node / rlib）
+const BINARY = join(here, '..', 'rebec', 'target', 'release', 'rebec.exe')
 const WORK = join(here, '.tmp-siyuan')
 
 /** 思源块表里的 type 代码。 */
@@ -50,7 +52,7 @@ if (!Number.isInteger(port) || port <= 0) {
 
 const target = await connect(workspace, port)
 const report = { steps: [] }
-const notebookName = 'session-sy 验证 ' + new Date().toISOString().replace(/[:.]/g, '-')
+const notebookName = 'dsh-session-sy 验证 ' + new Date().toISOString().replace(/[:.]/g, '-')
 let notebookId
 
 try {

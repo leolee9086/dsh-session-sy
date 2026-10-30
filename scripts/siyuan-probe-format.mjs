@@ -12,7 +12,7 @@ import { join } from 'node:path'
 
 import { connect, call, upload } from './siyuan-api.mjs'
 
-const here = 'D:/dev/session-sy'
+const here = join(import.meta.dirname, '..')
 const WORK = join(here, '.tmp-format')
 
 const workspace = process.argv[2]

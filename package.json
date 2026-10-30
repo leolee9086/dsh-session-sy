@@ -1,11 +1,17 @@
 {
-  "name": "session-sy",
+  "name": "dsh-session-sy",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Agent session 序列 <-> 思源 .sy 文档的双向转换；Rust 单实现，DSH 是第一个适配器",
+  "description": "DSH 会话与思源 .sy 互转的适配器与验证脚本；解析和渲染引擎在 rebec（Rust）",
   "scripts": {
-    "build": "cargo build --release --manifest-path rust/session-sy/Cargo.toml",
-    "test": "cargo test --release --manifest-path rust/session-sy/Cargo.toml"
+    "build": "cargo build --release --manifest-path ../rebec/Cargo.toml",
+    "test": "cargo test --release --manifest-path ../rebec/Cargo.toml",
+    "node-addon": "cargo build --release --manifest-path ../rebec/Cargo.toml && node scripts/copy-addon.mjs"
+  },
+  "rebec": {
+    "bin": "../rebec/target/release/rebec.exe",
+    "addon": "../rebec/rebec.node",
+    "source": "../rebec"
   }
 }
