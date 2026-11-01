@@ -1,9 +1,22 @@
 {
   "name": "dsh-session-sy",
   "version": "0.1.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "description": "DSH 会话与思源 .sy 互转的适配器与验证脚本；解析和渲染引擎是 rebec（Rust）",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    }
+  },
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "addon",
+    "bin",
+    "README.md"
+  ],
   "bin": {
     "rebec": "bin/rebec.exe"
   },
