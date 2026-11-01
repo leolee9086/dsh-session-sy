@@ -25,6 +25,21 @@ export function sessionFromLog(bytes) { return addon().sessionFromLog(bytes); }
 /** 规范 JSONL 文本 → 会话 JSON 文本。 */
 export function sessionFromJsonl(text) { return addon().sessionFromJsonl(text); }
 
+/**
+ * 会话头与事件（结构化的 JSON 值）→ 会话 JSON 文本。
+ *
+ * 宿主给出的头是内存形状；物理日志第一行还带 `type: "session"` 与 `delegationDepth`。
+ * 这一步属于日志格式，留在转换封装里，调用方只负责搬结构化的数据。
+ */
+export function sessionFromParts(header, events) {
+  if (header === null || typeof header !== "object" || !Array.isArray(events)) {
+    throw new TypeError("sessionFromParts 需要会话头对象和事件数组");
+  }
+  const lines = [JSON.stringify({ type: "session", ...header, delegationDepth: header.delegationDepth ?? 0 })];
+  for (const event of events) lines.push(JSON.stringify(event));
+  return sessionFromJsonl(`${lines.join("\n")}\n`);
+}
+
 /** 会话 JSON 文本 → .sy 文档 JSON 文本；spin 决定是否挂原始事件。 */
 export function sessionToSy(sessionJson, spin, assets) { return addon().sessionToSy(sessionJson, spin, assets); }
 

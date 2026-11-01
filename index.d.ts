@@ -4,6 +4,8 @@ export function addon(): Record<string, unknown>;
 export function sessionFromLog(bytes: Uint8Array): string;
 /** 规范 JSONL 文本 → 会话 JSON 文本。 */
 export function sessionFromJsonl(text: string): string;
+/** 会话头与事件（结构化的 JSON 值）→ 会话 JSON 文本。 */
+export function sessionFromParts(header: Record<string, unknown>, events: readonly unknown[]): string;
 /** 会话 JSON 文本 → .sy 文档 JSON 文本；spin 决定是否挂原始事件。 */
 export function sessionToSy(sessionJson: string, spin?: boolean, assets?: string): string;
 /** .sy 文档 JSON 文本 → 会话 JSON 文本。 */
